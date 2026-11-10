@@ -3,7 +3,7 @@ use crate::pane::{Action, Pane, Rename, SearchState};
 use crate::text::{fold, fuzzy_score};
 use crate::theme::{self, Glyph};
 use eframe::egui::{self, Key};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -57,7 +57,10 @@ pub struct App {
     busy: bool,
     dialog: Option<Dialog>,
     recent: Vec<PathBuf>,
+    /// Sidebar favourites as (label, folder), in display order.
     quick: Vec<(String, PathBuf)>,
+    /// Favourites were reordered by a drag that is still going; save when it ends.
+    fav_dirty: bool,
     drives: Vec<PathBuf>,
     font: Option<String>,
 }
@@ -93,16 +96,55 @@ impl App {
             busy: false,
             dialog: None,
             recent: Vec::new(),
-            quick: fsx::quick_access(),
+            quick: initial_favorites(),
+            fav_dirty: false,
             drives: fsx::drives(),
             font,
         };
         if app.font.is_none() {
             app.status = "No Japanese font found; set FONT_8823 to a .ttf/.ttc path".into();
         }
+        app.publish_favorites();
         app.load(0);
         app.load(1);
         app
+    }
+
+    /// Let the panes see the favourites, so their menus can offer Add or Remove.
+    fn publish_favorites(&self) {
+        let paths: Vec<PathBuf> = self.quick.iter().map(|(_, p)| p.clone()).collect();
+        self.ctx.data_mut(|d| d.insert_temp(crate::pane::favorites_id(), Arc::new(paths)));
+    }
+
+    fn favorites_changed(&mut self) {
+        self.publish_favorites();
+        let paths: Vec<PathBuf> = self.quick.iter().map(|(_, p)| p.clone()).collect();
+        if let Err(e) = crate::config::save_favorites(&paths) {
+            self.status = format!("Could not save Favorites: {e}");
+        }
+    }
+
+    fn is_favorite(&self, path: &Path) -> bool {
+        self.quick.iter().any(|(_, p)| p == path)
+    }
+
+    fn add_favorite(&mut self, path: PathBuf) {
+        if self.is_favorite(&path) {
+            self.status = "Already in Favorites".into();
+            return;
+        }
+        let name = favorite_name(&path, &fsx::quick_access());
+        self.status = format!("Added to Favorites: {name}");
+        self.quick.push((name, path));
+        self.favorites_changed();
+    }
+
+    fn remove_favorite(&mut self, path: &Path) {
+        if let Some(i) = self.quick.iter().position(|(_, p)| p == path) {
+            let (name, _) = self.quick.remove(i);
+            self.status = format!("Removed from Favorites: {name}");
+            self.favorites_changed();
+        }
     }
 
     fn bg(&self) -> Bg {
@@ -588,6 +630,13 @@ impl App {
                 self.dialog = Some(Dialog::NewFolder { pane: p, name: "新しいフォルダー".into(), focus: true });
             }
             Action::OpenInNewTab(path) => self.new_tab(path),
+            Action::ToggleFavorite(path) => {
+                if self.is_favorite(&path) {
+                    self.remove_favorite(&path);
+                } else {
+                    self.add_favorite(path);
+                }
+            }
             Action::OpenInOther(p) => {
                 if let Some(e) = self.panes[p].cursor_entry().cloned() {
                     self.dual = true;
@@ -644,6 +693,19 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::G)) {
             let g = self.panes[self.active].gallery;
             self.set_gallery(!g);
+        }
+        // ⌘/Ctrl+D: add the selected folders to Favorites, or this folder when none is selected.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::D)) {
+            let pane = &self.panes[self.active];
+            let mut picks: Vec<PathBuf> =
+                pane.selected.iter().filter_map(|&ei| pane.entries.get(ei)).filter(|e| e.is_dir).map(|e| e.path.clone()).collect();
+            picks.sort();
+            if picks.is_empty() {
+                picks.push(pane.path.clone());
+            }
+            for p in picks {
+                self.add_favorite(p);
+            }
         }
         if t_new {
             let p = self.panes[self.active].path.clone();
@@ -736,14 +798,54 @@ impl App {
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui, out: &mut Vec<Action>) {
+        let mut add_current = false;
+        let mut remove: Option<PathBuf> = None;
+        let mut reorder: Option<(usize, usize)> = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             let cur = self.panes[self.active].path.clone();
             let a = self.active;
-            section(ui, "FAVORITES");
-            for (label, path) in &self.quick {
-                if side_item(ui, place_glyph(label, path), label, &cur == path, &path.display().to_string()) {
+            let add_tip = format!("Add this folder to Favorites ({})", crate::plat::keys("Ctrl+D"));
+            add_current = section_with_add(ui, "FAVORITES", &add_tip);
+            // Click to go, drag to reorder, right-click to remove.
+            let mut rects: Vec<egui::Rect> = Vec::new();
+            let mut dragging: Option<usize> = None;
+            for (i, (label, path)) in self.quick.iter().enumerate() {
+                let id = egui::Id::unique(("favorite", path));
+                let r = side_row(ui, place_glyph(label, path), label, &cur == path, Some(id));
+                rects.push(r.rect);
+                if r.clicked() {
                     out.push(Action::Navigate(a, path.clone()));
+                }
+                if r.middle_clicked() {
+                    out.push(Action::OpenInNewTab(path.clone()));
+                }
+                if r.dragged() {
+                    dragging = Some(i);
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                }
+                r.context_menu(|ui| {
+                    if ui.button("Open in new tab").clicked() {
+                        out.push(Action::OpenInNewTab(path.clone()));
+                    }
+                    if ui.button("Remove from Favorites").clicked() {
+                        remove = Some(path.clone());
+                    }
+                });
+                if dragging.is_none() {
+                    r.on_hover_text(path.display().to_string());
+                }
+            }
+            // Move the dragged favourite once the pointer passes a neighbour's middle.
+            if let (Some(i), Some(pos)) = (dragging, ui.ctx().pointer_interact_pos()) {
+                let mut to = i;
+                for (j, r) in rects.iter().enumerate() {
+                    if (j > i && pos.y > r.center().y) || (j < i && pos.y < r.center().y && to == i) {
+                        to = j;
+                    }
+                }
+                if to != i {
+                    reorder = Some((i, to));
                 }
             }
             section(ui, if cfg!(windows) { "DRIVES" } else { "VOLUMES" });
@@ -766,6 +868,22 @@ impl App {
                 }
             }
         });
+        if add_current {
+            let p = self.panes[self.active].path.clone();
+            self.add_favorite(p);
+        }
+        if let Some(p) = remove {
+            self.remove_favorite(&p);
+        }
+        if let Some((from, to)) = reorder {
+            let f = self.quick.remove(from);
+            self.quick.insert(to, f);
+            self.fav_dirty = true;
+        }
+        if self.fav_dirty && !ui.input(|i| i.pointer.any_down()) {
+            self.fav_dirty = false;
+            self.favorites_changed();
+        }
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
@@ -1110,7 +1228,7 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, tip: &str) -> bool
     resp.on_hover_text(tip).clicked()
 }
 
-fn section(ui: &mut egui::Ui, title: &str) {
+fn section(ui: &mut egui::Ui, title: &str) -> egui::Rect {
     ui.add_space(12.0);
     let pal = theme::pal(ui);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
@@ -1121,6 +1239,43 @@ fn section(ui: &mut egui::Ui, title: &str) {
         egui::FontId::proportional(10.5),
         pal.weak.gamma_multiply(0.85),
     );
+    rect
+}
+
+/// A section title with a small "+" at its right edge. Returns true when the "+" is clicked.
+fn section_with_add(ui: &mut egui::Ui, title: &str, tip: &str) -> bool {
+    let rect = section(ui, title);
+    let pal = theme::pal(ui);
+    let pr = egui::Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), egui::vec2(20.0, 18.0));
+    let resp = ui.interact(pr, ui.scope_id().with(("section-add", title)), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(pr, 4.0, pal.hover);
+    }
+    let st = egui::Stroke::new(1.3, if resp.hovered() { pal.strong } else { pal.weak });
+    let m = pr.center();
+    ui.painter().line_segment([m - egui::vec2(4.0, 0.0), m + egui::vec2(4.0, 0.0)], st);
+    ui.painter().line_segment([m - egui::vec2(0.0, 4.0), m + egui::vec2(0.0, 4.0)], st);
+    resp.on_hover_text(tip).clicked()
+}
+
+/// The sidebar favourites: what the user saved, or the standard folders until they change something.
+fn initial_favorites() -> Vec<(String, PathBuf)> {
+    let standard = fsx::quick_access();
+    match crate::config::load_favorites() {
+        Some(paths) => paths.into_iter().map(|p| (favorite_name(&p, &standard), p)).collect(),
+        None => standard,
+    }
+}
+
+/// Standard folders keep their names ("Home", "Desktop"…); any other folder shows its own name.
+fn favorite_name(path: &Path, standard: &[(String, PathBuf)]) -> String {
+    if let Some((label, _)) = standard.iter().find(|(_, p)| p == path) {
+        return label.clone();
+    }
+    match path.file_name() {
+        Some(n) => crate::text::display_name(n),
+        None => path.display().to_string(),
+    }
 }
 
 fn place_glyph(label: &str, path: &std::path::Path) -> Glyph {
@@ -1141,12 +1296,25 @@ fn place_glyph(label: &str, path: &std::path::Path) -> Glyph {
 
 /// One sidebar row: glyph + label, with a pill highlight when it is the current folder.
 fn side_item(ui: &mut egui::Ui, g: Glyph, label: &str, selected: bool, tip: &str) -> bool {
+    side_row(ui, g, label, selected, None).on_hover_text(tip).clicked()
+}
+
+/// The row itself. With a `drag_id` the row also senses drags, under an id that stays put
+/// when rows are reordered.
+fn side_row(ui: &mut egui::Ui, g: Glyph, label: &str, selected: bool, drag_id: Option<egui::Id>) -> egui::Response {
     let pal = theme::pal(ui);
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::click());
+    let size = egui::vec2(ui.available_width(), 28.0);
+    let (rect, resp) = match drag_id {
+        Some(id) => {
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            (rect, ui.interact(rect, id, egui::Sense::click_and_drag()))
+        }
+        None => ui.allocate_exact_size(size, egui::Sense::click()),
+    };
     let p = ui.painter_at(rect);
     if selected {
         p.rect_filled(rect, 6.0, pal.surface);
-    } else if resp.hovered() {
+    } else if resp.hovered() || resp.dragged() {
         p.rect_filled(rect, 6.0, pal.hover);
     }
     let icon_c = if selected { pal.accent } else { pal.weak };
@@ -1154,5 +1322,5 @@ fn side_item(ui: &mut egui::Ui, g: Glyph, label: &str, selected: bool, tip: &str
     theme::glyph(&p, g, egui::pos2(rect.left() + 18.0, rect.center().y), icon_c);
     let galley = theme::elided(ui, label, egui::FontId::proportional(13.5), text_c, rect.width() - 44.0);
     theme::paint_left(&p, galley, egui::pos2(rect.left() + 36.0, rect.center().y), text_c);
-    resp.on_hover_text(tip).clicked()
+    resp
 }

@@ -17,7 +17,8 @@ A fast, keyboard-driven file manager for Windows and macOS, written in Rust, wit
 - macOS file names stored in decomposed form (NFD, e.g. ガ as カ + ゛) are shown composed, and match searches typed in normal (NFC) form.
 - IME input (日本語入力) works in every text field: rename, filter, search, path bar.
 - Copy / cut / paste, rename in place (F2), new folder, Recycle Bin delete, permanent delete with confirmation, drag files in from Explorer.
-- Go-to palette (`Ctrl+P`) over quick-access, recent folders and drives.
+- Favorites in the sidebar: add any folder with the `+` next to FAVORITES, with `Ctrl+D`, or from the right-click menu. Drag to reorder, right-click to remove. They are kept in a plain text file, `favorites.txt`, under `%APPDATA%\8823` (Windows) or `~/Library/Application Support/8823` (macOS); set `CONFIG_8823` to use another folder.
+- Go-to palette (`Ctrl+P`) over favorites, recent folders and drives.
 - Press `F1` for every shortcut.
 
 ## Why egui / eframe
@@ -79,6 +80,7 @@ GitHub Actions (`.github/workflows/build.yml`) builds `8823.exe` and `8823-mac.z
 | Space / Ctrl+A | Toggle / select all |
 | Ctrl+F / Ctrl+Shift+F | Filter / search subfolders |
 | Ctrl+P / Ctrl+L | Go to folder / edit path |
+| Ctrl+D | Add the selected folder (or this folder) to Favorites |
 | Ctrl+C X V | Copy, cut, paste |
 | Ctrl+Shift+C | Copy full path |
 | F2 | Rename |

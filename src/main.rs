@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
+mod config;
 mod fonts;
 mod fsx;
 mod pane;

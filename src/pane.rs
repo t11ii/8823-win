@@ -83,6 +83,28 @@ pub enum Action {
     Terminal(PathBuf),
     CloseSearch(usize),
     OpenInNewTab(PathBuf),
+    /// Add the folder to the sidebar favourites, or remove it if it is already there.
+    ToggleFavorite(PathBuf),
+}
+
+/// Where the app publishes the favourite folders (egui temp data), so menus here can say Add or Remove.
+pub fn favorites_id() -> egui::Id {
+    egui::Id::unique("8823-favorites")
+}
+
+fn is_favorite(ui: &egui::Ui, path: &Path) -> bool {
+    ui.ctx()
+        .data(|d| d.get_temp::<Arc<Vec<PathBuf>>>(favorites_id()))
+        .is_some_and(|v| v.iter().any(|f| f == path))
+}
+
+fn favorite_label(ui: &egui::Ui, path: &Path, this_folder: bool) -> String {
+    match (is_favorite(ui, path), this_folder) {
+        (false, false) => format!("Add to Favorites\t{}", k("Ctrl+D")),
+        (false, true) => format!("Add this folder to Favorites\t{}", k("Ctrl+D")),
+        (true, false) => "Remove from Favorites".to_string(),
+        (true, true) => "Remove this folder from Favorites".to_string(),
+    }
 }
 
 impl Pane {
@@ -417,6 +439,10 @@ impl Pane {
             }
             if ui.button("Open terminal here").clicked() {
                 out.push(Action::Terminal(self.path.clone()));
+            }
+            ui.separator();
+            if ui.button(favorite_label(ui, &self.path, true)).clicked() {
+                out.push(Action::ToggleFavorite(self.path.clone()));
             }
         });
 
@@ -823,6 +849,9 @@ impl Pane {
             }
             if is_dir && ui.button("Open in other pane").clicked() {
                 out.push(Action::OpenInOther(id));
+            }
+            if is_dir && ui.button(favorite_label(ui, &path, false)).clicked() {
+                out.push(Action::ToggleFavorite(path.clone()));
             }
             ui.separator();
             if ui.button(format!("Copy\t{}", k("Ctrl+C"))).clicked() {

@@ -90,6 +90,7 @@ pub fn help() -> Vec<(String, String)> {
         ("Ctrl+F", "Filter this folder"),
         ("Ctrl+Shift+F", "Search subfolders"),
         ("Ctrl+P", "Go to folder"),
+        ("Ctrl+D", "Add folder to Favorites (right-click a favorite to remove, drag to reorder)"),
         ("Ctrl+L", "Edit path"),
         ("Ctrl+C / Ctrl+X / Ctrl+V", "Copy / cut / paste"),
         ("F2", "Rename"),
