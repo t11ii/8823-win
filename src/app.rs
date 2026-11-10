@@ -1,6 +1,7 @@
 use crate::fsx::{self, Bg, Msg};
 use crate::pane::{Action, Pane, Rename, SearchState};
 use crate::text::{fold, fuzzy_score};
+use crate::theme::{self, Glyph};
 use eframe::egui::{self, Key};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,10 +17,36 @@ enum Dialog {
     Help,
 }
 
+/// A tab: one or two panes. The active tab's state lives directly in `App`
+/// (`panes`, `active`, `dual`); the others are parked in `App::tabs`.
+struct Tab {
+    /// Stable identity, so a tab can be dragged while its position changes.
+    id: u64,
+    panes: [Pane; 2],
+    active: usize,
+    dual: bool,
+}
+
+impl Tab {
+    fn new(id: u64, path: PathBuf) -> Self {
+        Tab { id, panes: [Pane::new(path.clone()), Pane::new(path)], active: 0, dual: false }
+    }
+}
+
 pub struct App {
     panes: [Pane; 2],
     active: usize,
     dual: bool,
+    /// All tabs in order. `tabs[cur]` is a placeholder while that tab is active.
+    tabs: Vec<Tab>,
+    cur: usize,
+    next_tab_id: u64,
+    /// Tab strip on the left (stacked vertically) instead of along the top.
+    tabs_vertical: bool,
+    /// Dual pane arranged top/bottom instead of left/right.
+    split_stacked: bool,
+    thumbs: crate::thumbs::Thumbs,
+    type_to_filter: bool,
     show_hidden: bool,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
@@ -38,6 +65,7 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let font = crate::fonts::install(&cc.egui_ctx);
+        theme::install(&cc.egui_ctx);
         let (tx, rx) = channel();
         let start = std::env::args_os()
             .nth(1)
@@ -48,6 +76,13 @@ impl App {
             panes: [Pane::new(start.clone()), Pane::new(start)],
             active: 0,
             dual: false,
+            tabs: vec![Tab::new(0, PathBuf::new())],
+            cur: 0,
+            next_tab_id: 1,
+            tabs_vertical: false,
+            split_stacked: false,
+            thumbs: crate::thumbs::Thumbs::new(&cc.egui_ctx),
+            type_to_filter: true,
             show_hidden: false,
             tx,
             rx,
@@ -62,10 +97,9 @@ impl App {
             drives: fsx::drives(),
             font,
         };
-        app.status = match &app.font {
-            Some(f) => format!("Font: {f}"),
-            None => "No Japanese font found; set FONT_8823 to a .ttf/.ttc path".into(),
-        };
+        if app.font.is_none() {
+            app.status = "No Japanese font found; set FONT_8823 to a .ttf/.ttc path".into();
+        }
         app.load(0);
         app.load(1);
         app
@@ -109,6 +143,256 @@ impl App {
         self.load(p);
     }
 
+    /// Swap the live tab state with the slot `tabs[cur]`.
+    fn swap_cur(&mut self) {
+        let t = &mut self.tabs[self.cur];
+        std::mem::swap(&mut self.panes, &mut t.panes);
+        std::mem::swap(&mut self.active, &mut t.active);
+        std::mem::swap(&mut self.dual, &mut t.dual);
+    }
+
+    fn switch_tab(&mut self, to: usize) {
+        if to >= self.tabs.len() || to == self.cur {
+            return;
+        }
+        self.swap_cur();
+        self.cur = to;
+        self.swap_cur();
+        // The folder may have changed while the tab was in the background.
+        self.refresh_all();
+    }
+
+    fn new_tab(&mut self, path: PathBuf) {
+        let sh = self.show_hidden;
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let gallery = self.panes[self.active].gallery;
+        let mut tab = Tab::new(id, path);
+        tab.panes[0].gallery = gallery;
+        self.tabs.insert(self.cur + 1, tab);
+        self.switch_tab(self.cur + 1);
+        for p in &mut self.panes {
+            p.rebuild_view(sh);
+        }
+    }
+
+    fn close_tab(&mut self, i: usize) {
+        if self.tabs.len() <= 1 {
+            return;
+        }
+        if i == self.cur {
+            let to = if i + 1 < self.tabs.len() { i + 1 } else { i - 1 };
+            self.switch_tab(to);
+        }
+        let mut t = self.tabs.remove(i);
+        for p in &mut t.panes {
+            if let Some(s) = p.search.take() {
+                s.cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        if i < self.cur {
+            self.cur -= 1;
+        }
+    }
+
+    fn tab_title(&self, i: usize) -> String {
+        let (panes, active) = if i == self.cur { (&self.panes, self.active) } else { (&self.tabs[i].panes, self.tabs[i].active) };
+        let p = &panes[active].path;
+        p.file_name().map(crate::text::display_name).unwrap_or_else(|| p.display().to_string())
+    }
+
+    /// The pane a background result belongs to: in the active tab or a parked one.
+    fn pane_for(&mut self, pane: usize, req: u64) -> Option<&mut Pane> {
+        if self.panes[pane].req == req {
+            return Some(&mut self.panes[pane]);
+        }
+        let cur = self.cur;
+        self.tabs
+            .iter_mut()
+            .enumerate()
+            .filter(|(i, _)| *i != cur)
+            .map(|(_, t)| &mut t.panes[pane])
+            .find(|p| p.req == req)
+    }
+
+    fn move_tab(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
+            return;
+        }
+        let cur_id = self.tabs[self.cur].id;
+        let t = self.tabs.remove(from);
+        self.tabs.insert(to, t);
+        self.cur = self.tabs.iter().position(|t| t.id == cur_id).unwrap_or(0);
+    }
+
+    /// The tab strip: along the top (`vertical == false`) or stacked in a left column.
+    /// Click to switch, drag to reorder, middle-click or × to close.
+    fn tab_bar(&mut self, ui: &mut egui::Ui, vertical: bool) {
+        let mut switch = None;
+        let mut close = None;
+        let mut add = false;
+        let mut rects: Vec<egui::Rect> = Vec::new();
+        let mut dragging: Option<usize> = None;
+        let n = self.tabs.len();
+        let font = egui::FontId::proportional(13.0);
+        let mut body = |ui: &mut egui::Ui| {
+            for i in 0..n {
+                let title = self.tab_title(i);
+                let selected = i == self.cur;
+                let pal = theme::pal(ui);
+                let color = if selected { pal.strong } else { pal.weak };
+                let max_w = if vertical { (ui.available_width() - 30.0).max(40.0) } else { 180.0 };
+                let galley = theme::elided(ui, &title, font.clone(), color, max_w);
+                let text_w = galley.size().x.min(max_w);
+                let w = if vertical { ui.available_width() } else { text_w + 22.0 + if n > 1 { 20.0 } else { 0.0 } };
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 28.0), egui::Sense::hover());
+                let id = egui::Id::unique(("tab", self.tabs[i].id));
+                let r = ui.interact(rect, id, egui::Sense::click_and_drag());
+                let fill = if selected {
+                    pal.surface
+                } else if r.hovered() || r.dragged() {
+                    pal.hover
+                } else {
+                    egui::Color32::TRANSPARENT
+                };
+                ui.painter().rect_filled(rect, 6.0, fill);
+                if selected {
+                    // Accent marker: under the tab when tabs are on top, beside it when on the left.
+                    let mark = if vertical {
+                        egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top() + 6.0), egui::pos2(rect.left() + 3.0, rect.bottom() - 6.0))
+                    } else {
+                        egui::Rect::from_min_max(egui::pos2(rect.left() + 8.0, rect.bottom() - 2.5), egui::pos2(rect.right() - 8.0, rect.bottom() - 0.5))
+                    };
+                    ui.painter().rect_filled(mark, 1.5, pal.accent);
+                }
+                let tx = if vertical { 12.0 } else { 10.0 };
+                let text_clip = egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + tx + text_w, rect.bottom()));
+                ui.painter().with_clip_rect(text_clip).galley(
+                    egui::pos2(rect.left() + tx, rect.center().y - galley.size().y / 2.0),
+                    galley,
+                    color,
+                );
+                let r = r.on_hover_text(self.tab_path(i));
+                if r.clicked() {
+                    switch = Some(i);
+                }
+                if r.middle_clicked() {
+                    close = Some(i);
+                }
+                if r.dragged() {
+                    dragging = Some(i);
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                }
+                if n > 1 {
+                    let x_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 13.0, rect.center().y), egui::vec2(16.0, 16.0));
+                    let xr = ui.interact(x_rect, id.with("close"), egui::Sense::click());
+                    if xr.hovered() {
+                        ui.painter().rect_filled(x_rect, 4.0, pal.border);
+                    }
+                    let show_x = selected || r.hovered() || xr.hovered();
+                    let c = if xr.hovered() { pal.strong } else if show_x { pal.weak } else { egui::Color32::TRANSPARENT };
+                    let d = 3.5;
+                    let m = x_rect.center();
+                    let st = egui::Stroke::new(1.3, c);
+                    ui.painter().line_segment([m + egui::vec2(-d, -d), m + egui::vec2(d, d)], st);
+                    ui.painter().line_segment([m + egui::vec2(-d, d), m + egui::vec2(d, -d)], st);
+                    if xr.on_hover_text(format!("Close tab ({})", crate::plat::keys("Ctrl+W"))).clicked() {
+                        close = Some(i);
+                    }
+                }
+                rects.push(rect);
+            }
+            let pal = theme::pal(ui);
+            let (pr, presp) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+            if presp.hovered() {
+                ui.painter().rect_filled(pr, 6.0, pal.surface);
+            }
+            let st = egui::Stroke::new(1.4, if presp.hovered() { pal.strong } else { pal.weak });
+            let m = pr.center();
+            ui.painter().line_segment([m - egui::vec2(5.0, 0.0), m + egui::vec2(5.0, 0.0)], st);
+            ui.painter().line_segment([m - egui::vec2(0.0, 5.0), m + egui::vec2(0.0, 5.0)], st);
+            if presp.on_hover_text(format!("New tab ({})", crate::plat::keys("Ctrl+T"))).clicked() {
+                add = true;
+            }
+        };
+        if vertical {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            body(ui);
+        } else {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            body(ui);
+        }
+
+        // Drag to reorder: move the dragged tab once the pointer passes a neighbour's middle.
+        if let (Some(i), Some(pos)) = (dragging, ui.ctx().pointer_interact_pos()) {
+            let along = |p: egui::Pos2| if vertical { p.y } else { p.x };
+            let mut to = i;
+            for (j, r) in rects.iter().enumerate() {
+                if (j > i && along(pos) > along(r.center())) || (j < i && along(pos) < along(r.center()) && to == i) {
+                    to = j;
+                }
+            }
+            if to != i {
+                self.move_tab(i, to);
+                switch = None;
+            }
+        }
+        if let Some(i) = switch {
+            self.switch_tab(i);
+        }
+        if let Some(i) = close {
+            self.close_tab(i);
+        }
+        if add {
+            let p = self.panes[self.active].path.clone();
+            self.new_tab(p);
+        }
+    }
+
+    fn tab_path(&self, i: usize) -> String {
+        let (panes, active) = if i == self.cur { (&self.panes, self.active) } else { (&self.tabs[i].panes, self.tabs[i].active) };
+        panes[active].path.display().to_string()
+    }
+
+    /// View switches, right-aligned: list/gallery, single/dual pane, tab strip position.
+    fn view_icons(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        if icon_button(ui, Icon::TabsSide(self.tabs_vertical), false, if self.tabs_vertical { "Tabs on the left (click for top)" } else { "Tabs on top (click for left)" }) {
+            self.tabs_vertical = !self.tabs_vertical;
+        }
+        ui.add_space(8.0);
+        let dual_tip = format!("Dual pane, side by side ({})", crate::plat::keys("Ctrl+\\"));
+        if icon_button(ui, Icon::DualStacked, self.dual && self.split_stacked, "Dual pane, top and bottom") {
+            self.dual = true;
+            self.split_stacked = true;
+        }
+        if icon_button(ui, Icon::Dual, self.dual && !self.split_stacked, &dual_tip) {
+            self.dual = true;
+            self.split_stacked = false;
+        }
+        if icon_button(ui, Icon::Single, !self.dual, "Single pane") {
+            self.dual = false;
+            self.active = 0;
+        }
+        ui.add_space(8.0);
+        let a = self.active;
+        let g = self.panes[a].gallery;
+        let gal_tip = format!("Gallery view ({})", crate::plat::keys("Ctrl+G"));
+        let list_tip = format!("List view ({})", crate::plat::keys("Ctrl+G"));
+        if icon_button(ui, Icon::Gallery, g, &gal_tip) {
+            self.set_gallery(true);
+        }
+        if icon_button(ui, Icon::List, !g, &list_tip) {
+            self.set_gallery(false);
+        }
+    }
+
+    fn set_gallery(&mut self, on: bool) {
+        let p = &mut self.panes[self.active];
+        p.gallery = on;
+        p.scroll_to_cursor = true;
+    }
+
     fn refresh_all(&mut self) {
         for p in 0..2 {
             if self.panes[p].search.is_none() {
@@ -122,8 +406,8 @@ impl App {
             match msg {
                 Msg::Listing { pane, req, path, result } => {
                     let sh = self.show_hidden;
-                    let p = &mut self.panes[pane];
-                    if p.req != req || p.path != path {
+                    let Some(p) = self.pane_for(pane, req) else { continue };
+                    if p.path != path {
                         continue;
                     }
                     p.loading = false;
@@ -140,10 +424,7 @@ impl App {
                 }
                 Msg::SearchBatch { pane, req, items, scanned } => {
                     let sh = self.show_hidden;
-                    let p = &mut self.panes[pane];
-                    if p.req != req {
-                        continue;
-                    }
+                    let Some(p) = self.pane_for(pane, req) else { continue };
                     if let Some(s) = &mut p.search {
                         s.scanned = scanned;
                     }
@@ -152,10 +433,7 @@ impl App {
                 }
                 Msg::SearchDone { pane, req, scanned } => {
                     let sh = self.show_hidden;
-                    let p = &mut self.panes[pane];
-                    if p.req != req {
-                        continue;
-                    }
+                    let Some(p) = self.pane_for(pane, req) else { continue };
                     if let Some(s) = &mut p.search {
                         s.running = false;
                         s.scanned = scanned;
@@ -235,6 +513,7 @@ impl App {
             }
             Action::Refresh(p) => {
                 self.drives = fsx::drives();
+                self.thumbs.invalidate();
                 self.load(p)
             }
             Action::Copy(p) | Action::Cut(p) => {
@@ -308,6 +587,7 @@ impl App {
             Action::NewFolder(p) => {
                 self.dialog = Some(Dialog::NewFolder { pane: p, name: "新しいフォルダー".into(), focus: true });
             }
+            Action::OpenInNewTab(path) => self.new_tab(path),
             Action::OpenInOther(p) => {
                 if let Some(e) = self.panes[p].cursor_entry().cloned() {
                     self.dual = true;
@@ -340,6 +620,50 @@ impl App {
             return;
         }
         let typing = ctx.egui_wants_keyboard_input();
+        // Tabs: ⌘/Ctrl+T new, ⌘/Ctrl+W close, Ctrl+Tab / Ctrl+Shift+Tab cycle, ⌘/Ctrl+1…9 jump.
+        let (t_new, t_close, t_next, t_prev, t_jump) = ctx.input_mut(|i| {
+            let ctrl_tab = egui::Modifiers { ctrl: true, ..Default::default() };
+            let ctrl_shift_tab = egui::Modifiers { ctrl: true, shift: true, ..Default::default() };
+            let mut next = i.consume_key(ctrl_tab, Key::Tab);
+            let mut prev = i.consume_key(ctrl_shift_tab, Key::Tab);
+            if cfg!(target_os = "macos") {
+                // Safari/Finder style: ⇧⌘] / ⇧⌘[
+                next |= i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, Key::CloseBracket);
+                prev |= i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, Key::OpenBracket);
+            }
+            let digits = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
+            let jump = digits.iter().position(|k| i.consume_key(egui::Modifiers::COMMAND, *k));
+            (
+                i.consume_key(egui::Modifiers::COMMAND, Key::T),
+                i.consume_key(egui::Modifiers::COMMAND, Key::W),
+                next,
+                prev,
+                jump,
+            )
+        });
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::G)) {
+            let g = self.panes[self.active].gallery;
+            self.set_gallery(!g);
+        }
+        if t_new {
+            let p = self.panes[self.active].path.clone();
+            self.new_tab(p);
+        }
+        if t_close {
+            self.close_tab(self.cur);
+        }
+        let n = self.tabs.len();
+        if t_next {
+            self.switch_tab((self.cur + 1) % n);
+        }
+        if t_prev {
+            self.switch_tab((self.cur + n - 1) % n);
+        }
+        if let Some(j) = t_jump {
+            // ⌘9 is always the last tab, as in browsers.
+            self.switch_tab(if j == 8 { n - 1 } else { j });
+        }
+
         let (tab, toggle_dual, hidden, palette, search, help) = ctx.input_mut(|i| {
             (
                 !typing && i.consume_key(egui::Modifiers::NONE, Key::Tab),
@@ -397,7 +721,7 @@ impl App {
             let sh = self.show_hidden;
             let pane = &mut self.panes[a];
             let had_filter = !pane.filter.is_empty();
-            pane.keys(ctx, a, out);
+            pane.keys(ctx, a, self.type_to_filter, out);
             if had_filter && pane.filter.is_empty() {
                 pane.rebuild_view(sh);
             }
@@ -413,28 +737,31 @@ impl App {
 
     fn sidebar(&mut self, ui: &mut egui::Ui, out: &mut Vec<Action>) {
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.weak("QUICK ACCESS");
+            ui.spacing_mut().item_spacing.y = 1.0;
             let cur = self.panes[self.active].path.clone();
+            let a = self.active;
+            section(ui, "FAVORITES");
             for (label, path) in &self.quick {
-                if ui.selectable_label(&cur == path, label.as_str()).on_hover_text(path.display().to_string()).clicked() {
-                    out.push(Action::Navigate(self.active, path.clone()));
+                if side_item(ui, place_glyph(label, path), label, &cur == path, &path.display().to_string()) {
+                    out.push(Action::Navigate(a, path.clone()));
                 }
             }
-            ui.add_space(10.0);
-            ui.weak("DRIVES");
+            section(ui, if cfg!(windows) { "DRIVES" } else { "VOLUMES" });
             for d in &self.drives {
-                if ui.selectable_label(&cur == d, d.display().to_string()).clicked() {
-                    out.push(Action::Navigate(self.active, d.clone()));
+                let label = match d.file_name() {
+                    Some(n) => crate::text::display_name(n),
+                    None => d.display().to_string(),
+                };
+                if side_item(ui, Glyph::Drive, &label, &cur == d, &d.display().to_string()) {
+                    out.push(Action::Navigate(a, d.clone()));
                 }
             }
             if !self.recent.is_empty() {
-                ui.add_space(10.0);
-                ui.weak("RECENT");
+                section(ui, "RECENT");
                 for r in self.recent.iter().take(8) {
-                    let name = r.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| r.display().to_string());
-                    if ui.selectable_label(false, name).on_hover_text(r.display().to_string()).clicked() {
-                        out.push(Action::Navigate(self.active, r.clone()));
+                    let name = r.file_name().map(crate::text::display_name).unwrap_or_else(|| r.display().to_string());
+                    if side_item(ui, Glyph::Clock, &name, false, &r.display().to_string()) {
+                        out.push(Action::Navigate(a, r.clone()));
                     }
                 }
             }
@@ -613,16 +940,24 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll();
+        self.thumbs.poll(&ctx);
         let mut actions = Vec::new();
         self.global_keys(&ctx, &mut actions);
 
-        egui::Panel::bottom("status").show(ui, |ui| {
+        let pal = theme::pal(ui);
+        let side_frame = egui::Frame::new().fill(pal.panel).inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 8 });
+        egui::Panel::bottom("status")
+            .frame(egui::Frame::new().fill(pal.panel).inner_margin(egui::Margin::symmetric(12, 5)))
+            .show_separator_line(false)
+            .show(ui, |ui| {
+            ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
+            ui.visuals_mut().override_text_color = Some(pal.weak);
             ui.horizontal(|ui| {
                 let p = &self.panes[self.active];
                 let sel_size: u64 = p.selected.iter().map(|&i| p.entries[i].size).sum();
                 ui.label(format!("{} items", p.view.len()));
                 if !p.selected.is_empty() {
-                    ui.label(format!("· {} selected ({})", p.selected.len(), fsx::human_size(sel_size)));
+                    ui.label(format!("·  {} selected ({})", p.selected.len(), fsx::human_size(sel_size)));
                 }
                 if p.loading {
                     ui.spinner();
@@ -634,10 +969,8 @@ impl eframe::App for App {
                     if ui.small_button("?").on_hover_text("Keyboard shortcuts (F1)").clicked() {
                         self.dialog = Some(Dialog::Help);
                     }
-                    if ui.small_button(if self.dual { "Single pane" } else { "Dual pane" }).on_hover_text(crate::plat::keys("Ctrl+\\")).clicked() {
-                        self.dual = !self.dual;
-                        self.active = 0;
-                    }
+                    ui.checkbox(&mut self.type_to_filter, "Type to filter")
+                        .on_hover_text("Start typing in the file list to filter it, without pressing Ctrl+F first");
                     if self.busy {
                         ui.spinner();
                     }
@@ -646,19 +979,57 @@ impl eframe::App for App {
             });
         });
 
-        egui::Panel::left("sidebar").default_size(190.0).show(ui, |ui| self.sidebar(ui, &mut actions));
+        egui::Panel::left("sidebar")
+            .default_size(200.0)
+            .frame(side_frame)
+            .show_separator_line(false)
+            .show(ui, |ui| self.sidebar(ui, &mut actions));
 
-        egui::CentralPanel::default().show(ui, |ui| {
+        if self.tabs_vertical {
+            egui::Panel::left("vtabs").default_size(180.0).frame(side_frame).show_separator_line(false).show(ui, |ui| {
+                section(ui, "TABS");
+                egui::ScrollArea::vertical().id_salt("vtabs-scroll").show(ui, |ui| self.tab_bar(ui, true));
+            });
+        }
+
+        let central = egui::Frame::new().fill(pal.bg).inner_margin(egui::Margin { left: 10, right: 10, top: 8, bottom: 4 });
+        egui::CentralPanel::default().frame(central).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let icons_w = 210.0;
+                if !self.tabs_vertical {
+                    let w = (ui.available_width() - icons_w).max(80.0);
+                    egui::ScrollArea::horizontal()
+                        .id_salt("tabs-scroll")
+                        .max_width(w)
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .show(ui, |ui| ui.horizontal(|ui| self.tab_bar(ui, false)));
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.view_icons(ui));
+            });
+            ui.add_space(4.0);
             let sh = self.show_hidden;
-            if self.dual {
+            if self.dual && self.split_stacked {
+                let avail = ui.available_rect_before_wrap();
+                let gap = 6.0;
+                let h = ((avail.height() - gap) / 2.0).max(60.0);
+                for i in 0..2 {
+                    let top = avail.top() + i as f32 * (h + gap);
+                    let rect = egui::Rect::from_min_size(egui::pos2(avail.left(), top), egui::vec2(avail.width(), h));
+                    let active = self.active == i;
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(rect).id_salt(("stacked", i)), |ui| {
+                        ui.set_clip_rect(rect.expand(1.0));
+                        pane_frame(ui, active, |ui| self.panes[i].ui(ui, i, active, sh, &mut self.thumbs, &mut actions));
+                    });
+                }
+            } else if self.dual {
                 ui.columns(2, |cols| {
                     for (i, col) in cols.iter_mut().enumerate() {
                         let active = self.active == i;
-                        pane_frame(col, active, |ui| self.panes[i].ui(ui, i, active, sh, &mut actions));
+                        pane_frame(col, active, |ui| self.panes[i].ui(ui, i, active, sh, &mut self.thumbs, &mut actions));
                     }
                 });
             } else {
-                self.panes[0].ui(ui, 0, true, sh, &mut actions);
+                self.panes[0].ui(ui, 0, true, sh, &mut self.thumbs, &mut actions);
             }
         });
 
@@ -670,9 +1041,118 @@ impl eframe::App for App {
 }
 
 fn pane_frame(ui: &mut egui::Ui, active: bool, add: impl FnOnce(&mut egui::Ui)) {
-    let stroke = if active { ui.visuals().selection.stroke } else { ui.visuals().widgets.noninteractive.bg_stroke };
-    egui::Frame::new().stroke(egui::Stroke::new(1.0, stroke.color)).inner_margin(4.0).corner_radius(4.0).show(ui, |ui| {
+    let pal = theme::pal(ui);
+    let stroke = if active { pal.accent.gamma_multiply(0.7) } else { pal.border };
+    egui::Frame::new().stroke(egui::Stroke::new(1.0, stroke)).inner_margin(6.0).corner_radius(8.0).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
         add(ui)
     });
+}
+
+#[derive(Clone, Copy)]
+enum Icon {
+    List,
+    Gallery,
+    Single,
+    Dual,
+    DualStacked,
+    /// Tab strip position; `true` = currently on the left.
+    TabsSide(bool),
+}
+
+/// A small painted toolbar button. Returns true when clicked.
+fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, tip: &str) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, 26.0), egui::Sense::click());
+    let pal = theme::pal(ui);
+    let p = ui.painter();
+    if selected {
+        p.rect_filled(rect, 6.0, pal.surface);
+    } else if resp.hovered() {
+        p.rect_filled(rect, 6.0, pal.hover);
+    }
+    let c = if selected { pal.accent } else if resp.hovered() { pal.strong } else { pal.weak };
+    let st = egui::Stroke::new(1.3, c);
+    let r = egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 12.0));
+    match icon {
+        Icon::List => {
+            for k in 0..3 {
+                let y = r.top() + 1.5 + k as f32 * 4.5;
+                p.line_segment([egui::pos2(r.left(), y), egui::pos2(r.right(), y)], st);
+            }
+        }
+        Icon::Gallery => {
+            for (ix, iy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let min = egui::pos2(r.left() + 1.0 + ix as f32 * 8.0, r.top() + iy as f32 * 6.5);
+                p.rect_filled(egui::Rect::from_min_size(min, egui::vec2(6.0, 5.0)), 1.0, c);
+            }
+        }
+        Icon::Single => {
+            p.rect_stroke(r, 2.0, st, egui::StrokeKind::Inside);
+        }
+        Icon::Dual => {
+            p.rect_stroke(r, 2.0, st, egui::StrokeKind::Inside);
+            p.line_segment([egui::pos2(r.center().x, r.top()), egui::pos2(r.center().x, r.bottom())], st);
+        }
+        Icon::DualStacked => {
+            p.rect_stroke(r, 2.0, st, egui::StrokeKind::Inside);
+            p.line_segment([egui::pos2(r.left(), r.center().y), egui::pos2(r.right(), r.center().y)], st);
+        }
+        Icon::TabsSide(left) => {
+            p.rect_stroke(r, 2.0, st, egui::StrokeKind::Inside);
+            let strip = if left {
+                egui::Rect::from_min_max(r.min, egui::pos2(r.left() + 5.0, r.bottom()))
+            } else {
+                egui::Rect::from_min_max(r.min, egui::pos2(r.right(), r.top() + 4.0))
+            };
+            p.rect_filled(strip, 2.0, c);
+        }
+    }
+    resp.on_hover_text(tip).clicked()
+}
+
+fn section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(12.0);
+    let pal = theme::pal(ui);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
+    ui.painter().text(
+        egui::pos2(rect.left() + 10.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        title,
+        egui::FontId::proportional(10.5),
+        pal.weak.gamma_multiply(0.85),
+    );
+}
+
+fn place_glyph(label: &str, path: &std::path::Path) -> Glyph {
+    match label {
+        "Home" => Glyph::Home,
+        "Desktop" => Glyph::Desktop,
+        "Documents" => Glyph::Doc,
+        "Downloads" => Glyph::Download,
+        "Pictures" => Glyph::Picture,
+        "Music" => Glyph::Music,
+        "Videos" | "Movies" => Glyph::Video,
+        "Applications" => Glyph::Apps,
+        "OneDrive" | "iCloud Drive" => Glyph::Cloud,
+        _ if path.to_string_lossy().contains("CloudStorage") => Glyph::Cloud,
+        _ => Glyph::Folder,
+    }
+}
+
+/// One sidebar row: glyph + label, with a pill highlight when it is the current folder.
+fn side_item(ui: &mut egui::Ui, g: Glyph, label: &str, selected: bool, tip: &str) -> bool {
+    let pal = theme::pal(ui);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::click());
+    let p = ui.painter_at(rect);
+    if selected {
+        p.rect_filled(rect, 6.0, pal.surface);
+    } else if resp.hovered() {
+        p.rect_filled(rect, 6.0, pal.hover);
+    }
+    let icon_c = if selected { pal.accent } else { pal.weak };
+    let text_c = if selected { pal.strong } else { pal.text };
+    theme::glyph(&p, g, egui::pos2(rect.left() + 18.0, rect.center().y), icon_c);
+    let galley = theme::elided(ui, label, egui::FontId::proportional(13.5), text_c, rect.width() - 44.0);
+    theme::paint_left(&p, galley, egui::pos2(rect.left() + 36.0, rect.center().y), text_c);
+    resp.on_hover_text(tip).clicked()
 }

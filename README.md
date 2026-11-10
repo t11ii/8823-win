@@ -5,7 +5,12 @@ A fast, keyboard-driven file manager for Windows and macOS, written in Rust, wit
 ## Features
 
 - Instant folder listing on a background thread; virtualised list that only draws visible rows, so folders with 100k+ files stay smooth.
-- Single or dual pane (`Ctrl+\`), tab to switch.
+- Tabs (`Ctrl+T` / `Ctrl+W`, `Ctrl+Tab`, `Ctrl+1…9`, middle-click or `Ctrl+Enter` a folder to open it in a new tab). Drag tabs to reorder; show the tab strip on top or down the left side.
+- Single or dual pane, side by side or top/bottom, switched from the toolbar icons (`Ctrl+\` toggles; Tab switches pane).
+- List or gallery view (`Ctrl+G`) with image thumbnails (PNG, JPEG, GIF, BMP, WebP, ICO, TIFF) decoded in the background.
+- Dark and light themes that follow the system setting (`THEME_8823=light|dark` forces one).
+- Type to filter: just start typing in the list (Japanese IME included); ↑↓ pick, Enter opens, Esc clears. Can be turned off in the status bar.
+- Resizable columns: drag a header border; double-click a border to reset.
 - Filter as you type (`Ctrl+F`) and recursive search (`Ctrl+Shift+F`) that streams results while it scans.
 - Japanese-aware matching and sorting: full-width/half-width, hiragana/katakana and case are treated as equal, so `てすと` finds `テスト.txt` and `ﾃｽﾄ.txt`. Numbers sort naturally (`file2` before `file10`, `画像２` before `画像10`).
 - Bundled UI font **8823 Gothic**: JetBrains Mono (Latin) and BIZ UDゴシック (Japanese) merged into one font, so mixed Japanese/English names share one baseline. Built by `tools/build_font.py`; both are SIL OFL 1.1 (`assets/fonts/OFL.txt`). The system Japanese font (Yu Gothic UI / Hiragino) stays as a fallback; override with the `FONT_8823` environment variable.
