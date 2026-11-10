@@ -23,7 +23,50 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# Speed first, then size. The app itself is built at opt-level 3 (above). Dependencies
+# default to size-optimised code, which is fine for what runs once or rarely (window
+# and platform setup, clipboard, trash, font loading)...
+[profile.release.package."*"]
+opt-level = "s"
+
+# ...except everything on a hot path, which stays at full speed:
+# per-frame UI and text layout,
+[profile.release.package.egui]
+opt-level = 3
+[profile.release.package.epaint]
+opt-level = 3
+[profile.release.package.harfrust]
+opt-level = 3
+# name folding for sorting and filtering,
+[profile.release.package.unicode-normalization]
+opt-level = 3
+[profile.release.package.tinyvec]
+opt-level = 3
+# and image decoding for thumbnails.
+[profile.release.package.image]
+opt-level = 3
+[profile.release.package.zune-jpeg]
+opt-level = 3
+[profile.release.package.zune-core]
+opt-level = 3
+[profile.release.package.png]
+opt-level = 3
+[profile.release.package.fdeflate]
+opt-level = 3
+[profile.release.package.simd-adler32]
+opt-level = 3
+[profile.release.package.crc32fast]
+opt-level = 3
+[profile.release.package.image-webp]
+opt-level = 3
+[profile.release.package.gif]
+opt-level = 3
+[profile.release.package.weezl]
+opt-level = 3
+[profile.release.package.tiff]
+opt-level = 3
