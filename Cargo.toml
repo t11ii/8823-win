@@ -15,6 +15,7 @@ unicode-normalization = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 trash = "5"
 open = "5"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico", "tiff"] }
 egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 
 [target.'cfg(windows)'.dependencies]

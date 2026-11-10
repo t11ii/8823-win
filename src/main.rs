@@ -6,6 +6,8 @@ mod fsx;
 mod pane;
 mod plat;
 mod text;
+mod theme;
+mod thumbs;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
