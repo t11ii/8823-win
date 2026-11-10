@@ -3,6 +3,7 @@
 use crate::fsx::{self, Entry, SortKey};
 use crate::text::fold;
 use eframe::egui::{self, Align2, Color32, FontId, Key, Rect, Sense, Stroke, Vec2, pos2, vec2};
+use crate::plat::{BACK_KEY, DELETE_KEY, FWD_KEY, keys as k};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -181,18 +182,58 @@ impl Pane {
     /// Keyboard handling for the active pane when no text field has focus.
     pub fn keys(&mut self, ctx: &egui::Context, id: usize, out: &mut Vec<Action>) {
         let (ev, m) = ctx.input(|i| {
-            let keys: Vec<Key> = i
-                .events
-                .iter()
-                .filter_map(|e| match e {
-                    egui::Event::Key { key, pressed: true, .. } => Some(*key),
-                    _ => None,
-                })
-                .collect();
+            let mut keys: Vec<Key> = Vec::new();
+            for e in &i.events {
+                match e {
+                    egui::Event::Key { key, pressed: true, .. } => keys.push(*key),
+                    // egui-winit turns ⌘/Ctrl+C/X/V (and Shift+Del, Ctrl/Shift+Ins on Windows)
+                    // into clipboard events instead of key events.
+                    egui::Event::Copy => out.push(Action::Copy(id)),
+                    egui::Event::Cut if i.modifiers.shift && !i.modifiers.command => out.push(Action::Delete(id, true)),
+                    egui::Event::Cut => out.push(Action::Cut(id)),
+                    egui::Event::Paste(_) | egui::Event::PasteImage(_) => out.push(Action::Paste(id)),
+                    _ => {}
+                }
+            }
             (keys, i.modifiers)
         });
         let c = self.cursor as isize;
         for k in ev {
+            // macOS Finder conventions, checked first so they win over the generic bindings.
+            #[cfg(target_os = "macos")]
+            {
+                let cmd = m.mac_cmd || m.command;
+                let handled = match k {
+                    Key::Backspace | Key::Delete if cmd => {
+                        out.push(Action::Delete(id, m.alt));
+                        true
+                    }
+                    Key::ArrowUp if cmd => {
+                        out.push(Action::Up(id));
+                        true
+                    }
+                    Key::ArrowDown | Key::O if cmd => {
+                        out.push(Action::OpenCursor(id));
+                        true
+                    }
+                    Key::OpenBracket if cmd => {
+                        out.push(Action::Back(id));
+                        true
+                    }
+                    Key::CloseBracket if cmd => {
+                        out.push(Action::Forward(id));
+                        true
+                    }
+                    Key::C if cmd && m.alt => {
+                        out.push(Action::CopyPath(id));
+                        true
+                    }
+                    _ => false,
+                };
+                if handled {
+                    continue;
+                }
+            }
             match k {
                 Key::ArrowDown if !m.alt => self.move_cursor(c + 1, m.shift),
                 Key::ArrowUp if m.alt => out.push(Action::Up(id)),
@@ -270,27 +311,20 @@ impl Pane {
             self.scroll_to_cursor = false;
         }
 
-        ui.spacing_mut().item_spacing.y = 0.0;
-        let n = self.view.len();
-        let output = scroll.show_rows(ui, ROW_H, n, |ui, range| {
-            for vi in range {
-                self.row_ui(ui, id, vi, active, accent, out);
-            }
-        });
-        self.scroll_y = output.state.clamped_offset().y;
-        self.view_h = output.inner_rect.height();
-
-        // Click on empty space below the rows: activate pane and offer paste/new-folder.
-        let bg = ui.interact(output.inner_rect, ui.scope_id().with(("bg", id)), Sense::click());
+        // Background of the list (empty space below the rows): activate pane, offer paste/new-folder.
+        // It must be registered BEFORE the rows: egui gives clicks to the widget registered last,
+        // so a background added afterwards would swallow every click on a row.
+        let bg_rect = ui.available_rect_before_wrap();
+        let bg = ui.interact(bg_rect, ui.scope_id().with(("bg", id)), Sense::click());
         if bg.clicked() {
             out.push(Action::Activate(id));
             self.selected.clear();
         }
         bg.context_menu(|ui| {
-            if ui.button("Paste\tCtrl+V").clicked() {
+            if ui.button(format!("Paste\t{}", k("Ctrl+V"))).clicked() {
                 out.push(Action::Paste(id));
             }
-            if ui.button("New folder\tCtrl+Shift+N").clicked() {
+            if ui.button(format!("New folder\t{}", k("Ctrl+Shift+N"))).clicked() {
                 out.push(Action::NewFolder(id));
             }
             if ui.button("Refresh\tF5").clicked() {
@@ -300,17 +334,27 @@ impl Pane {
                 out.push(Action::Terminal(self.path.clone()));
             }
         });
+
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let n = self.view.len();
+        let output = scroll.show_rows(ui, ROW_H, n, |ui, range| {
+            for vi in range {
+                self.row_ui(ui, id, vi, active, accent, out);
+            }
+        });
+        self.scroll_y = output.state.clamped_offset().y;
+        self.view_h = output.inner_rect.height();
     }
 
     fn header_ui(&mut self, ui: &mut egui::Ui, id: usize, show_hidden: bool, out: &mut Vec<Action>) {
         ui.horizontal(|ui| {
-            if ui.add_enabled(!self.back.is_empty(), egui::Button::new("◀")).on_hover_text("Back (Alt+←)").clicked() {
+            if ui.add_enabled(!self.back.is_empty(), egui::Button::new("◀")).on_hover_text(format!("Back ({})", k(BACK_KEY))).clicked() {
                 out.push(Action::Back(id));
             }
-            if ui.add_enabled(!self.fwd.is_empty(), egui::Button::new("▶")).on_hover_text("Forward (Alt+→)").clicked() {
+            if ui.add_enabled(!self.fwd.is_empty(), egui::Button::new("▶")).on_hover_text(format!("Forward ({})", k(FWD_KEY))).clicked() {
                 out.push(Action::Forward(id));
             }
-            if ui.button("▲").on_hover_text("Parent folder (Backspace)").clicked() {
+            if ui.button("▲").on_hover_text("Parent folder").clicked() {
                 out.push(Action::Up(id));
             }
 
@@ -344,7 +388,7 @@ impl Pane {
                                 for (k, p) in parts.iter().rev().enumerate() {
                                     let label = p
                                         .file_name()
-                                        .map(|s| s.to_string_lossy().into_owned())
+                                        .map(crate::text::display_name)
                                         .unwrap_or_else(|| p.display().to_string());
                                     if k > 0 {
                                         ui.weak(" › ");
@@ -368,7 +412,7 @@ impl Pane {
                 egui::TextEdit::singleline(&mut self.filter)
                     .id(fid)
                     .desired_width(filter_w)
-                    .hint_text("Filter (Ctrl+F)"),
+                    .hint_text(format!("Filter ({})", k("Ctrl+F"))),
             );
             if self.focus_filter {
                 resp.request_focus();
@@ -452,8 +496,15 @@ impl Pane {
         let cols = Columns::new(rect, self.search.is_some());
         let font = FontId::proportional(14.0);
         let small = FontId::proportional(13.0);
-        let text_c = if e.hidden { v.weak_text_color() } else { v.text_color() };
-        let weak = v.weak_text_color();
+        // On a selected (highlighted) row, use the selection's text colour so names stay readable.
+        let text_c = if is_sel {
+            v.selection.stroke.color
+        } else if e.hidden {
+            v.weak_text_color()
+        } else {
+            v.text_color()
+        };
+        let weak = if is_sel { v.selection.stroke.color.gamma_multiply(0.8) } else { v.weak_text_color() };
 
         let renaming = self.rename.as_ref().is_some_and(|r| r.path == e.path);
         paint_icon(&painter, pos2(cols.name.left() + 8.0, rect.center().y), e.is_dir, &e.ext, weak);
@@ -556,27 +607,27 @@ impl Pane {
                 out.push(Action::OpenInOther(id));
             }
             ui.separator();
-            if ui.button("Copy\tCtrl+C").clicked() {
+            if ui.button(format!("Copy\t{}", k("Ctrl+C"))).clicked() {
                 out.push(Action::Copy(id));
             }
-            if ui.button("Cut\tCtrl+X").clicked() {
+            if ui.button(format!("Cut\t{}", k("Ctrl+X"))).clicked() {
                 out.push(Action::Cut(id));
             }
-            if ui.button("Paste\tCtrl+V").clicked() {
+            if ui.button(format!("Paste\t{}", k("Ctrl+V"))).clicked() {
                 out.push(Action::Paste(id));
             }
             ui.separator();
             if ui.button("Rename\tF2").clicked() {
                 out.push(Action::StartRename(id));
             }
-            if ui.button("Delete\tDel").clicked() {
+            if ui.button(format!("Move to {}\t{}", crate::plat::TRASH, k(DELETE_KEY))).clicked() {
                 out.push(Action::Delete(id, false));
             }
             ui.separator();
-            if ui.button("Copy path\tCtrl+Shift+C").clicked() {
+            if ui.button(format!("Copy path\t{}", k("Ctrl+Shift+C"))).clicked() {
                 out.push(Action::CopyPath(id));
             }
-            if ui.button("Show in Explorer").clicked() {
+            if ui.button(format!("Show in {}", crate::plat::FILE_BROWSER)).clicked() {
                 out.push(Action::Reveal(path.clone()));
             }
         });
@@ -621,7 +672,7 @@ struct Columns {
 
 impl Columns {
     fn new(r: Rect, search: bool) -> Self {
-        let (date_w, size_w, ext_w) = (130.0, 80.0, 64.0);
+        let (date_w, size_w, ext_w) = (150.0, 84.0, 70.0);
         let fixed = date_w + size_w + ext_w;
         let flex = (r.width() - fixed).max(120.0);
         let (name_w, folder_w) = if search { (flex * 0.55, flex * 0.45) } else { (flex, 0.0) };

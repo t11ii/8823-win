@@ -4,6 +4,7 @@ mod app;
 mod fonts;
 mod fsx;
 mod pane;
+mod plat;
 mod text;
 
 fn main() -> eframe::Result {

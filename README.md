@@ -1,6 +1,6 @@
 # 8823 (はやぶさ)
 
-A fast, keyboard-driven file manager for Windows, written in Rust, with first-class Japanese support.
+A fast, keyboard-driven file manager for Windows and macOS, written in Rust, with first-class Japanese support.
 
 ## Features
 
@@ -8,7 +8,8 @@ A fast, keyboard-driven file manager for Windows, written in Rust, with first-cl
 - Single or dual pane (`Ctrl+\`), tab to switch.
 - Filter as you type (`Ctrl+F`) and recursive search (`Ctrl+Shift+F`) that streams results while it scans.
 - Japanese-aware matching and sorting: full-width/half-width, hiragana/katakana and case are treated as equal, so `てすと` finds `テスト.txt` and `ﾃｽﾄ.txt`. Numbers sort naturally (`file2` before `file10`, `画像２` before `画像10`).
-- Japanese UI fonts loaded from the system (Yu Gothic UI → Meiryo UI → MS Gothic). Override with the `FONT_8823` environment variable.
+- Bundled UI font **8823 Gothic**: JetBrains Mono (Latin) and BIZ UDゴシック (Japanese) merged into one font, so mixed Japanese/English names share one baseline. Built by `tools/build_font.py`; both are SIL OFL 1.1 (`assets/fonts/OFL.txt`). The system Japanese font (Yu Gothic UI / Hiragino) stays as a fallback; override with the `FONT_8823` environment variable.
+- macOS file names stored in decomposed form (NFD, e.g. ガ as カ + ゛) are shown composed, and match searches typed in normal (NFC) form.
 - IME input (日本語入力) works in every text field: rename, filter, search, path bar.
 - Copy / cut / paste, rename in place (F2), new folder, Recycle Bin delete, permanent delete with confirmation, drag files in from Explorer.
 - Go-to palette (`Ctrl+P`) over quick-access, recent folders and drives.
@@ -44,9 +45,23 @@ sudo apt install mingw-w64
 cargo build --release --target x86_64-pc-windows-gnu
 ```
 
-GitHub Actions builds `8823.exe` on every push (`.github/workflows/windows.yml`) and attaches it to releases for `v*` tags.
+macOS (universal .app for Apple Silicon and Intel):
 
-## Keyboard
+```
+./scripts/bundle-mac.sh      # → dist/8823-mac.zip
+```
+
+The app is ad-hoc signed, not notarized. On first launch, right-click 8823.app → Open (or run `xattr -dr com.apple.quarantine 8823.app`).
+
+GitHub Actions (`.github/workflows/build.yml`) builds `8823.exe` and `8823-mac.zip` on every push and attaches both to releases for `v*` tags.
+
+## macOS differences
+
+- Shortcuts use ⌘ wherever Windows uses Ctrl, plus Finder conventions: ⌘⌫ Trash, ⌥⌘⌫ delete permanently, ⌘↑ parent, ⌘↓ / ⌘O open, ⌘[ ⌘] back/forward, ⇧⌘G go to folder, ⇧⌘. hidden files, ⌥⌘C copy path.
+- Sidebar lists `/Volumes` (external disks, DMGs, network shares), iCloud Drive and `~/Library/CloudStorage` (Dropbox, Google Drive, OneDrive…).
+- Files flagged hidden with `chflags hidden` are treated as hidden, like dotfiles.
+
+## Keyboard (Windows; press F1 in the app for the current platform)
 
 | Key | Action |
 |---|---|

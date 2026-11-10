@@ -63,7 +63,7 @@ impl App {
             font,
         };
         app.status = match &app.font {
-            Some(f) => format!("Japanese font: {f}"),
+            Some(f) => format!("Font: {f}"),
             None => "No Japanese font found; set FONT_8823 to a .ttf/.ttc path".into(),
         };
         app.load(0);
@@ -242,6 +242,11 @@ impl App {
                 let t = self.panes[p].targets();
                 if !t.is_empty() {
                     self.status = format!("{} {} item(s)", if cut { "Cut" } else { "Copied" }, t.len());
+                    // Also put the paths on the system clipboard: handy in other apps, and it
+                    // guarantees the next ⌘/Ctrl+V reaches us (egui only reports a paste when
+                    // the system clipboard has content).
+                    let text: Vec<String> = t.iter().map(|x| x.display().to_string()).collect();
+                    self.ctx.copy_text(text.join("\n"));
                     self.clipboard = Some((t, cut));
                 }
             }
@@ -318,8 +323,8 @@ impl App {
                     self.status = format!("Copied {} path(s)", s.len());
                 }
             }
-            Action::Reveal(path) => reveal(&path),
-            Action::Terminal(path) => terminal(&path),
+            Action::Reveal(path) => crate::plat::reveal(&path),
+            Action::Terminal(path) => crate::plat::terminal(&path),
             Action::CloseSearch(p) => {
                 if let Some(s) = self.panes[p].search.take() {
                     s.cancel.store(true, Ordering::Relaxed);
@@ -345,6 +350,22 @@ impl App {
                 i.consume_key(egui::Modifiers::NONE, Key::F1),
             )
         });
+        // Finder-style aliases: ⌘⇧. toggles hidden files, ⌘⇧G opens "Go to folder".
+        // (⌘H is the system "Hide app" shortcut on macOS, so it can't be ours there.)
+        let (hidden, palette) = if cfg!(target_os = "macos") {
+            ctx.input(|i| {
+                let ms = i.modifiers.command && i.modifiers.shift;
+                let hit = |want: Key| {
+                    i.events.iter().any(|e| {
+                        matches!(e, egui::Event::Key { key, physical_key, pressed: true, .. }
+                            if ms && (*key == want || *physical_key == Some(want)))
+                    })
+                };
+                (hidden || hit(Key::Period), palette || hit(Key::G))
+            })
+        } else {
+            (hidden, palette)
+        };
         if tab && self.dual {
             self.active = 1 - self.active;
         }
@@ -382,7 +403,7 @@ impl App {
             }
         }
 
-        // Files dropped from Explorer are copied into the active folder.
+        // Files dropped from Explorer/Finder are copied into the active folder.
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
         if !dropped.is_empty() {
             self.busy = true;
@@ -448,7 +469,7 @@ impl App {
                 }
                 Dialog::ConfirmDelete { paths, .. } => {
                     ui.heading("Delete permanently?");
-                    ui.label(format!("{} item(s) will be deleted without going to the Recycle Bin.", paths.len()));
+                    ui.label(format!("{} item(s) will be deleted without going to the {}.", paths.len(), crate::plat::TRASH));
                     for p in paths.iter().take(8) {
                         ui.monospace(p.display().to_string());
                     }
@@ -549,9 +570,9 @@ impl App {
                 Dialog::Help => {
                     ui.heading("Keyboard");
                     egui::Grid::new("help").striped(true).show(ui, |ui| {
-                        for (k, v) in HELP {
-                            ui.monospace(*k);
-                            ui.label(*v);
+                        for (k, v) in crate::plat::help() {
+                            ui.monospace(k);
+                            ui.label(v);
                             ui.end_row();
                         }
                     });
@@ -588,29 +609,6 @@ impl App {
     }
 }
 
-const HELP: &[(&str, &str)] = &[
-    ("↑ ↓ PgUp PgDn Home End", "Move (Shift extends selection)"),
-    ("Enter / double-click", "Open folder or file"),
-    ("Backspace, Alt+↑", "Parent folder"),
-    ("Alt+← / Alt+→", "Back / forward"),
-    ("Space", "Toggle selection"),
-    ("Ctrl+A", "Select all"),
-    ("Ctrl+F", "Filter this folder"),
-    ("Ctrl+Shift+F", "Search subfolders"),
-    ("Ctrl+P", "Go to folder"),
-    ("Ctrl+L", "Edit path"),
-    ("Ctrl+C / X / V", "Copy / cut / paste"),
-    ("Ctrl+Shift+C", "Copy full path"),
-    ("F2", "Rename"),
-    ("Delete / Shift+Delete", "Recycle Bin / delete permanently"),
-    ("Ctrl+Shift+N", "New folder"),
-    ("Ctrl+\\", "Toggle dual pane"),
-    ("Tab", "Switch pane"),
-    ("Ctrl+H", "Show hidden files"),
-    ("F5", "Refresh"),
-    ("Esc", "Clear filter / close search"),
-];
-
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -636,7 +634,7 @@ impl eframe::App for App {
                     if ui.small_button("?").on_hover_text("Keyboard shortcuts (F1)").clicked() {
                         self.dialog = Some(Dialog::Help);
                     }
-                    if ui.small_button(if self.dual { "▣ Single" } else { "◫ Dual" }).on_hover_text("Ctrl+\\").clicked() {
+                    if ui.small_button(if self.dual { "Single pane" } else { "Dual pane" }).on_hover_text(crate::plat::keys("Ctrl+\\")).clicked() {
                         self.dual = !self.dual;
                         self.active = 0;
                     }
@@ -677,33 +675,4 @@ fn pane_frame(ui: &mut egui::Ui, active: bool, add: impl FnOnce(&mut egui::Ui)) 
         ui.set_min_size(ui.available_size());
         add(ui)
     });
-}
-
-fn reveal(path: &std::path::Path) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn();
-    }
-    #[cfg(not(windows))]
-    {
-        if let Some(parent) = path.parent() {
-            let _ = open::that_detached(parent);
-        }
-    }
-}
-
-fn terminal(dir: &std::path::Path) {
-    #[cfg(windows)]
-    {
-        // Prefer Windows Terminal, fall back to cmd.
-        let ok = std::process::Command::new("wt.exe").arg("-d").arg(dir).spawn().is_ok();
-        if !ok {
-            let _ = std::process::Command::new("cmd").args(["/c", "start", "", "cmd"]).current_dir(dir).spawn();
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = std::process::Command::new("x-terminal-emulator").current_dir(dir).spawn();
-    }
 }
