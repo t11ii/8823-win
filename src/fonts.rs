@@ -8,7 +8,7 @@ use std::sync::Arc;
 /// (file, face index inside a .ttc)
 fn candidates() -> Vec<(PathBuf, u32)> {
     let mut v = Vec::new();
-    if let Some(p) = std::env::var_os("HAYATE_FONT") {
+    if let Some(p) = std::env::var_os("FONT_8823") {
         v.push((PathBuf::from(p), 0));
     }
     #[cfg(windows)]

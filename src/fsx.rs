@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn japanese_names_roundtrip_through_fs() {
-        let dir = std::env::temp_dir().join(format!("hayate-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("app8823-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("サブフォルダ")).unwrap();
         std::fs::write(dir.join("日本語ファイル.txt"), "こんにちは").unwrap();

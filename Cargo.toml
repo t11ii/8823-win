@@ -1,9 +1,13 @@
 [package]
-name = "hayate"
+name = "app8823"
 version = "0.1.0"
 edition = "2024"
 description = "A fast, keyboard-driven file manager for Windows with first-class Japanese support"
 license = "MIT"
+
+[[bin]]
+name = "8823"
+path = "src/main.rs"
 
 [dependencies]
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "clipboard", "x11"] }

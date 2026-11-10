@@ -1,4 +1,4 @@
-# Hayate (疾風)
+# 8823 (はやぶさ)
 
 A fast, keyboard-driven file manager for Windows, written in Rust, with first-class Japanese support.
 
@@ -8,7 +8,7 @@ A fast, keyboard-driven file manager for Windows, written in Rust, with first-cl
 - Single or dual pane (`Ctrl+\`), tab to switch.
 - Filter as you type (`Ctrl+F`) and recursive search (`Ctrl+Shift+F`) that streams results while it scans.
 - Japanese-aware matching and sorting: full-width/half-width, hiragana/katakana and case are treated as equal, so `てすと` finds `テスト.txt` and `ﾃｽﾄ.txt`. Numbers sort naturally (`file2` before `file10`, `画像２` before `画像10`).
-- Japanese UI fonts loaded from the system (Yu Gothic UI → Meiryo UI → MS Gothic). Override with the `HAYATE_FONT` environment variable.
+- Japanese UI fonts loaded from the system (Yu Gothic UI → Meiryo UI → MS Gothic). Override with the `FONT_8823` environment variable.
 - IME input (日本語入力) works in every text field: rename, filter, search, path bar.
 - Copy / cut / paste, rename in place (F2), new folder, Recycle Bin delete, permanent delete with confirmation, drag files in from Explorer.
 - Go-to palette (`Ctrl+P`) over quick-access, recent folders and drives.
@@ -33,7 +33,7 @@ Windows (native):
 
 ```
 cargo build --release
-target\release\hayate.exe
+target\release\8823.exe
 ```
 
 From Linux (cross-compile):
@@ -44,7 +44,7 @@ sudo apt install mingw-w64
 cargo build --release --target x86_64-pc-windows-gnu
 ```
 
-GitHub Actions builds `hayate.exe` on every push (`.github/workflows/windows.yml`) and attaches it to releases for `v*` tags.
+GitHub Actions builds `8823.exe` on every push (`.github/workflows/windows.yml`) and attaches it to releases for `v*` tags.
 
 ## Keyboard
 
