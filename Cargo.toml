@@ -1,0 +1,24 @@
+[package]
+name = "hayate"
+version = "0.1.0"
+edition = "2024"
+description = "A fast, keyboard-driven file manager for Windows with first-class Japanese support"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "clipboard", "x11"] }
+unicode-normalization = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+trash = "5"
+open = "5"
+egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
