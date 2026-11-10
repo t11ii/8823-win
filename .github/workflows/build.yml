@@ -18,6 +18,9 @@ jobs:
         run: cargo test --release
       - name: Build
         run: cargo build --release
+      - name: Report size
+        shell: bash
+        run: ls -l target/release/8823.exe
       - uses: actions/upload-artifact@v4
         with:
           name: 8823-windows-x64
@@ -34,15 +37,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --release
-      - name: Build universal .app
+      - name: Build .app (Apple Silicon)
         run: ./scripts/bundle-mac.sh
+      - name: Report size
+        run: |
+          ls -l dist/8823-mac.zip dist/8823.app/Contents/MacOS/8823
+          du -sk dist/8823.app
       - uses: actions/upload-artifact@v4
         with:
-          name: 8823-mac-universal
+          name: 8823-mac-arm64
           path: dist/8823-mac.zip
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')

@@ -50,11 +50,13 @@ sudo apt install mingw-w64
 cargo build --release --target x86_64-pc-windows-gnu
 ```
 
-macOS (universal .app for Apple Silicon and Intel):
+macOS (.app for Apple Silicon):
 
 ```
 ./scripts/bundle-mac.sh      # → dist/8823-mac.zip
 ```
+
+The app is built for Apple Silicon only, which keeps it half the size of a universal one. For a universal app that also runs on Intel Macs, run `ARCHS="aarch64 x86_64" ./scripts/bundle-mac.sh`.
 
 The app is ad-hoc signed, not notarized. On first launch, right-click 8823.app → Open (or run `xattr -dr com.apple.quarantine 8823.app`).
 

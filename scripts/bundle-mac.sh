@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
-# Build a universal (Apple Silicon + Intel) 8823.app and zip it.
+# Build 8823.app and zip it.
+#
+# Apple Silicon only by default, which keeps the app half the size of a universal one.
+# For a universal (Apple Silicon + Intel) app:  ARCHS="aarch64 x86_64" ./scripts/bundle-mac.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
-cargo build --release --target aarch64-apple-darwin
-cargo build --release --target x86_64-apple-darwin
+ARCHS=${ARCHS:-aarch64}
+BINS=()
+for arch in $ARCHS; do
+  rustup target add "$arch-apple-darwin"
+  cargo build --release --target "$arch-apple-darwin"
+  BINS+=("target/$arch-apple-darwin/release/8823")
+done
 
 VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 APP=dist/8823.app
 rm -rf dist && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-lipo -create -output "$APP/Contents/MacOS/8823" \
-  target/aarch64-apple-darwin/release/8823 \
-  target/x86_64-apple-darwin/release/8823
+if [ "${#BINS[@]}" -eq 1 ]; then
+  cp "${BINS[0]}" "$APP/Contents/MacOS/8823"
+else
+  lipo -create -output "$APP/Contents/MacOS/8823" "${BINS[@]}"
+fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
