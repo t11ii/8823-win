@@ -7,6 +7,12 @@
 use std::cmp::Ordering;
 use unicode_normalization::UnicodeNormalization;
 
+/// Name for display. macOS hands back names in decomposed form (NFD), where
+/// "ガ" is "カ" + U+3099; composing to NFC makes dakuten/handakuten render as one glyph.
+pub fn display_name(s: &std::ffi::OsStr) -> String {
+    s.to_string_lossy().nfc().collect()
+}
+
 /// Normalise a string for searching and sorting.
 pub fn fold(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -113,6 +119,13 @@ mod tests {
         assert_eq!(fold("ﾃｽﾄ"), fold("てすと"));
         assert_eq!(fold("ＡＢＣ１２３"), "abc123");
         assert!(fold("報告書_ﾌｧｲﾙ.TXT").contains(&fold("ファイル")));
+    }
+
+    #[test]
+    fn nfd_names_compose_for_display() {
+        let nfd = "\u{30CF}\u{309A}\u{30F3}\u{30AB}\u{3099}"; // パンガ, decomposed
+        assert_eq!(display_name(std::ffi::OsStr::new(nfd)), "パンガ");
+        assert_eq!(fold(nfd), fold("ぱんが"));
     }
 
     #[test]

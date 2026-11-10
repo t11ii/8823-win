@@ -23,13 +23,20 @@ fn candidates() -> Vec<(PathBuf, u32)> {
         v.push((fonts.join("meiryo.ttc"), 2));
         v.push((fonts.join("msgothic.ttc"), 0));
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        // Hiragino Sans (ヒラギノ角ゴシック) ships with every macOS; W4 reads best at UI sizes.
+        for w in ["W4", "W3", "W5"] {
+            v.push((PathBuf::from(format!("/System/Library/Fonts/ヒラギノ角ゴシック {w}.ttc")), 0));
+        }
+        v.push((PathBuf::from("/System/Library/Fonts/Hiragino Sans GB.ttc"), 0));
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         for p in [
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-            "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
         ] {
             v.push((PathBuf::from(p), 0));
         }
@@ -43,7 +50,13 @@ fn latin_ui_font() -> Option<Vec<u8>> {
     std::fs::read(dir.join("segoeui.ttf")).ok()
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn latin_ui_font() -> Option<Vec<u8>> {
+    // Helvetica Neue: a static (non-variable) font close to the system UI look.
+    std::fs::read("/System/Library/Fonts/HelveticaNeue.ttc").ok()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn latin_ui_font() -> Option<Vec<u8>> {
     None
 }

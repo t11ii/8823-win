@@ -30,7 +30,7 @@ pub struct Entry {
 
 impl Entry {
     pub fn new(path: PathBuf, name: OsString, md: Option<Metadata>, ft: Option<FileType>) -> Self {
-        let name = name.to_string_lossy().into_owned();
+        let name = crate::text::display_name(&name);
         let is_link = ft.map(|t| t.is_symlink()).unwrap_or(false);
         let mut is_dir = ft.map(|t| t.is_dir()).unwrap_or(false);
         if is_link {
@@ -60,7 +60,14 @@ fn is_hidden(_name: &str, md: Option<&Metadata>) -> bool {
     md.map(|m| m.file_attributes() & (HIDDEN | SYSTEM) != 0).unwrap_or(false)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn is_hidden(name: &str, md: Option<&Metadata>) -> bool {
+    use std::os::macos::fs::MetadataExt;
+    const UF_HIDDEN: u32 = 0x8000; // set by `chflags hidden`, used for ~/Library etc.
+    name.starts_with('.') || md.map(|m| m.st_flags() & UF_HIDDEN != 0).unwrap_or(false)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn is_hidden(name: &str, _md: Option<&Metadata>) -> bool {
     name.starts_with('.')
 }
@@ -268,7 +275,7 @@ pub fn spawn_delete(bg: Bg, paths: Vec<PathBuf>, permanent: bool) {
         let summary = if permanent {
             format!("Deleted {n} item(s) permanently")
         } else {
-            format!("Moved {n} item(s) to the Recycle Bin")
+            format!("Moved {n} item(s) to the {}", crate::plat::TRASH)
         };
         bg.send(Msg::OpDone { summary, errors });
     });
@@ -286,7 +293,23 @@ pub fn drives() -> Vec<PathBuf> {
             .map(|i| PathBuf::from(format!("{}:\\", (b'A' + i) as char)))
             .collect()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        // "/" plus every mounted volume (external disks, USB sticks, DMGs, network shares).
+        let mut v = vec![PathBuf::from("/")];
+        if let Ok(rd) = std::fs::read_dir("/Volumes") {
+            let mut vols: Vec<PathBuf> = rd
+                .flatten()
+                .map(|d| d.path())
+                // The boot volume shows up as a symlink to "/"; skip it.
+                .filter(|p| !p.is_symlink())
+                .collect();
+            vols.sort();
+            v.extend(vols);
+        }
+        v
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         vec![PathBuf::from("/")]
     }
@@ -309,10 +332,29 @@ pub fn quick_access() -> Vec<(String, PathBuf)> {
         ("Pictures", "Pictures"),
         ("Music", "Music"),
         ("Videos", "Videos"),
+        ("Movies", "Movies"),
+        ("Applications", "Applications"),
     ] {
         let p = home.join(sub);
         if p.is_dir() {
             v.push((label.to_string(), p));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let icloud = home.join("Library/Mobile Documents/com~apple~CloudDocs");
+        if icloud.is_dir() {
+            v.push(("iCloud Drive".to_string(), icloud));
+        }
+        if PathBuf::from("/Applications").is_dir() {
+            v.push(("Applications".to_string(), PathBuf::from("/Applications")));
+        }
+        // Dropbox, OneDrive, Google Drive, Box… all live here on current macOS.
+        if let Ok(rd) = std::fs::read_dir(home.join("Library/CloudStorage")) {
+            for d in rd.flatten() {
+                let name = crate::text::display_name(&d.file_name());
+                v.push((name, d.path()));
+            }
         }
     }
     // OneDrive often redirects Desktop/Documents on Japanese Windows installs.
