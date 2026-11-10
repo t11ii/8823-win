@@ -63,7 +63,7 @@ impl App {
             font,
         };
         app.status = match &app.font {
-            Some(f) => format!("Japanese font: {f}"),
+            Some(f) => format!("Font: {f}"),
             None => "No Japanese font found; set FONT_8823 to a .ttf/.ttc path".into(),
         };
         app.load(0);

@@ -311,18 +311,11 @@ impl Pane {
             self.scroll_to_cursor = false;
         }
 
-        ui.spacing_mut().item_spacing.y = 0.0;
-        let n = self.view.len();
-        let output = scroll.show_rows(ui, ROW_H, n, |ui, range| {
-            for vi in range {
-                self.row_ui(ui, id, vi, active, accent, out);
-            }
-        });
-        self.scroll_y = output.state.clamped_offset().y;
-        self.view_h = output.inner_rect.height();
-
-        // Click on empty space below the rows: activate pane and offer paste/new-folder.
-        let bg = ui.interact(output.inner_rect, ui.scope_id().with(("bg", id)), Sense::click());
+        // Background of the list (empty space below the rows): activate pane, offer paste/new-folder.
+        // It must be registered BEFORE the rows: egui gives clicks to the widget registered last,
+        // so a background added afterwards would swallow every click on a row.
+        let bg_rect = ui.available_rect_before_wrap();
+        let bg = ui.interact(bg_rect, ui.scope_id().with(("bg", id)), Sense::click());
         if bg.clicked() {
             out.push(Action::Activate(id));
             self.selected.clear();
@@ -341,6 +334,16 @@ impl Pane {
                 out.push(Action::Terminal(self.path.clone()));
             }
         });
+
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let n = self.view.len();
+        let output = scroll.show_rows(ui, ROW_H, n, |ui, range| {
+            for vi in range {
+                self.row_ui(ui, id, vi, active, accent, out);
+            }
+        });
+        self.scroll_y = output.state.clamped_offset().y;
+        self.view_h = output.inner_rect.height();
     }
 
     fn header_ui(&mut self, ui: &mut egui::Ui, id: usize, show_hidden: bool, out: &mut Vec<Action>) {
@@ -493,8 +496,15 @@ impl Pane {
         let cols = Columns::new(rect, self.search.is_some());
         let font = FontId::proportional(14.0);
         let small = FontId::proportional(13.0);
-        let text_c = if e.hidden { v.weak_text_color() } else { v.text_color() };
-        let weak = v.weak_text_color();
+        // On a selected (highlighted) row, use the selection's text colour so names stay readable.
+        let text_c = if is_sel {
+            v.selection.stroke.color
+        } else if e.hidden {
+            v.weak_text_color()
+        } else {
+            v.text_color()
+        };
+        let weak = if is_sel { v.selection.stroke.color.gamma_multiply(0.8) } else { v.weak_text_color() };
 
         let renaming = self.rename.as_ref().is_some_and(|r| r.path == e.path);
         paint_icon(&painter, pos2(cols.name.left() + 8.0, rect.center().y), e.is_dir, &e.ext, weak);
@@ -662,7 +672,7 @@ struct Columns {
 
 impl Columns {
     fn new(r: Rect, search: bool) -> Self {
-        let (date_w, size_w, ext_w) = (130.0, 80.0, 64.0);
+        let (date_w, size_w, ext_w) = (150.0, 84.0, 70.0);
         let fixed = date_w + size_w + ext_w;
         let flex = (r.width() - fixed).max(120.0);
         let (name_w, folder_w) = if search { (flex * 0.55, flex * 0.45) } else { (flex, 0.0) };

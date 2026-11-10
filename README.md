@@ -8,7 +8,7 @@ A fast, keyboard-driven file manager for Windows and macOS, written in Rust, wit
 - Single or dual pane (`Ctrl+\`), tab to switch.
 - Filter as you type (`Ctrl+F`) and recursive search (`Ctrl+Shift+F`) that streams results while it scans.
 - Japanese-aware matching and sorting: full-width/half-width, hiragana/katakana and case are treated as equal, so `てすと` finds `テスト.txt` and `ﾃｽﾄ.txt`. Numbers sort naturally (`file2` before `file10`, `画像２` before `画像10`).
-- Japanese UI fonts loaded from the system: Yu Gothic UI → Meiryo UI → MS Gothic on Windows, Hiragino Sans (ヒラギノ角ゴシック) on macOS. Override with the `FONT_8823` environment variable.
+- Bundled UI font **8823 Gothic**: JetBrains Mono (Latin) and BIZ UDゴシック (Japanese) merged into one font, so mixed Japanese/English names share one baseline. Built by `tools/build_font.py`; both are SIL OFL 1.1 (`assets/fonts/OFL.txt`). The system Japanese font (Yu Gothic UI / Hiragino) stays as a fallback; override with the `FONT_8823` environment variable.
 - macOS file names stored in decomposed form (NFD, e.g. ガ as カ + ゛) are shown composed, and match searches typed in normal (NFC) form.
 - IME input (日本語入力) works in every text field: rename, filter, search, path bar.
 - Copy / cut / paste, rename in place (F2), new folder, Recycle Bin delete, permanent delete with confirmation, drag files in from Explorer.

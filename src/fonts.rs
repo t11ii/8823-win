@@ -1,5 +1,11 @@
-//! Font setup. egui's built-in fonts have no CJK glyphs, so we load the system's
-//! Japanese UI fonts at startup and register them as fallbacks for every family.
+//! Font setup.
+//!
+//! The UI uses "8823 Gothic", bundled into the binary: JetBrains Mono for Latin and
+//! BIZ UDゴシック for Japanese, merged into ONE font by `tools/build_font.py`.
+//! Because both scripts share one set of vertical metrics, mixed names like
+//! "2610_研究AIを作る.pdf" sit on a single baseline. (Pairing a Latin font with a
+//! separate Japanese fallback makes kana/kanji ride higher or lower than the Latin.)
+//! The system's Japanese font stays loaded as a last resort for rare glyphs.
 
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use std::path::PathBuf;
@@ -8,9 +14,6 @@ use std::sync::Arc;
 /// (file, face index inside a .ttc)
 fn candidates() -> Vec<(PathBuf, u32)> {
     let mut v = Vec::new();
-    if let Some(p) = std::env::var_os("FONT_8823") {
-        v.push((PathBuf::from(p), 0));
-    }
     #[cfg(windows)]
     {
         let fonts = std::env::var_os("WINDIR")
@@ -44,54 +47,48 @@ fn candidates() -> Vec<(PathBuf, u32)> {
     v
 }
 
-#[cfg(windows)]
-fn latin_ui_font() -> Option<Vec<u8>> {
-    let dir = std::env::var_os("WINDIR").map(PathBuf::from)?.join("Fonts");
-    std::fs::read(dir.join("segoeui.ttf")).ok()
-}
+static BUNDLED: &[u8] = include_bytes!("../assets/fonts/8823Gothic-Regular.ttf");
 
-#[cfg(target_os = "macos")]
-fn latin_ui_font() -> Option<Vec<u8>> {
-    // Helvetica Neue: a static (non-variable) font close to the system UI look.
-    std::fs::read("/System/Library/Fonts/HelveticaNeue.ttc").ok()
-}
-
-#[cfg(not(any(windows, target_os = "macos")))]
-fn latin_ui_font() -> Option<Vec<u8>> {
-    None
-}
-
-/// Returns the name of the Japanese font that was loaded, if any.
+/// Returns a description of the font in use, for the status bar.
 pub fn install(ctx: &egui::Context) -> Option<String> {
     let mut fonts = FontDefinitions::default();
-    let mut loaded = None;
+    let mut primary = vec!["8823-gothic".to_string()];
+    fonts.font_data.insert("8823-gothic".into(), Arc::new(FontData::from_static(BUNDLED)));
+    let mut desc = "8823 Gothic (JetBrains Mono + BIZ UDゴシック)".to_string();
 
-    if let Some(bytes) = latin_ui_font() {
-        fonts.font_data.insert("ui-latin".into(), Arc::new(FontData::from_owned(bytes)));
-        if let Some(f) = fonts.families.get_mut(&FontFamily::Proportional) {
-            f.insert(0, "ui-latin".into());
+    // FONT_8823=/path/to/font.ttf overrides the UI font.
+    if let Some(p) = std::env::var_os("FONT_8823") {
+        if let Ok(bytes) = std::fs::read(&p) {
+            fonts.font_data.insert("user".into(), Arc::new(FontData::from_owned(bytes)));
+            primary.insert(0, "user".into());
+            desc = PathBuf::from(p).display().to_string();
+        }
+    }
+    for fam in [FontFamily::Proportional, FontFamily::Monospace] {
+        if let Some(list) = fonts.families.get_mut(&fam) {
+            for (i, name) in primary.iter().enumerate() {
+                list.insert(i, name.clone());
+            }
         }
     }
 
+    // System Japanese font as a last resort for anything the bundled font lacks.
     for (path, index) in candidates() {
         let Ok(bytes) = std::fs::read(&path) else { continue };
         let index = if index < ttc_face_count(&bytes) { index } else { 0 };
         let mut data = FontData::from_owned(bytes);
         data.index = index;
-        fonts.font_data.insert("ja".into(), Arc::new(data));
-        // Appended as a fallback: Latin and the bundled icon/emoji fonts keep priority,
-        // every kana/kanji glyph they lack comes from here.
+        fonts.font_data.insert("ja-system".into(), Arc::new(data));
         for fam in [FontFamily::Proportional, FontFamily::Monospace] {
             if let Some(list) = fonts.families.get_mut(&fam) {
-                list.push("ja".into());
+                list.push("ja-system".into());
             }
         }
-        loaded = Some(path.display().to_string());
         break;
     }
 
     ctx.set_fonts(fonts);
-    loaded
+    Some(desc)
 }
 
 /// Number of faces in a TrueType collection (1 for a plain .ttf/.otf).
