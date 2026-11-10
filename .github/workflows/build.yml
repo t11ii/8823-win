@@ -18,6 +18,9 @@ jobs:
         run: cargo test --release
       - name: Build
         run: cargo build --release
+      - name: Report size
+        shell: bash
+        run: ls -l target/release/8823.exe
       - uses: actions/upload-artifact@v4
         with:
           name: 8823-windows-x64
@@ -40,6 +43,10 @@ jobs:
         run: cargo test --release
       - name: Build universal .app
         run: ./scripts/bundle-mac.sh
+      - name: Report size
+        run: |
+          ls -l dist/8823-mac.zip dist/8823.app/Contents/MacOS/8823
+          du -sk dist/8823.app
       - uses: actions/upload-artifact@v4
         with:
           name: 8823-mac-universal
