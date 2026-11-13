@@ -56,3 +56,42 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/8823-mac.zip
+
+  # Every successful build on main replaces the rolling "latest" release, so the
+  # newest binaries are always at
+  #   https://github.com/t11ii/8823-win/releases/latest
+  # (direct links: .../releases/latest/download/8823.exe and 8823-mac.zip).
+  # Pull request builds are not published. Version tags (v*) still get their own
+  # release from the steps above.
+  publish-latest:
+    needs: [windows, macos]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-latest
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Replace the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -lR dist
+          short=$(echo "$GITHUB_SHA" | cut -c1-7)
+          stamp=$(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M JST')
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest \
+            dist/8823-windows-x64/8823.exe \
+            dist/8823-mac-arm64/8823-mac.zip \
+            --target "$GITHUB_SHA" \
+            --title "最新ビルド ($stamp, $short)" \
+            --latest \
+            --notes "main の最新ビルドです（コミット $GITHUB_SHA）。新しいビルドが成功するたびに自動で置き換わります。
+
+          - Windows (x64): 8823.exe
+          - Mac (Apple Silicon): 8823-mac.zip"
