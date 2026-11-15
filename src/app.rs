@@ -63,12 +63,15 @@ pub struct App {
     fav_dirty: bool,
     drives: Vec<PathBuf>,
     font: Option<String>,
+    startup_bg: crate::plat::StartupBackground,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let font = crate::fonts::install(&cc.egui_ctx);
         theme::install(&cc.egui_ctx);
+        let bg = if cc.egui_ctx.theme() == egui::Theme::Dark { theme::DARK.bg } else { theme::LIGHT.bg };
+        let startup_bg = crate::plat::StartupBackground::install(cc, bg);
         let (tx, rx) = channel();
         let start = std::env::args_os()
             .nth(1)
@@ -100,6 +103,7 @@ impl App {
             fav_dirty: false,
             drives: fsx::drives(),
             font,
+            startup_bg,
         };
         if app.font.is_none() {
             app.status = "No Japanese font found; set FONT_8823 to a .ttf/.ttc path".into();
@@ -1054,11 +1058,24 @@ impl App {
     }
 }
 
+/// How long the window keeps its startup background (see `plat::StartupBackground`).
+const STARTUP_BG_SECS: f64 = 0.6;
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll();
         self.thumbs.poll(&ctx);
+        if self.startup_bg.active() {
+            // Keep drawing while the startup background is in place, so a frame always
+            // follows any erase Windows does with it; then hand back to winit's default.
+            if ctx.input(|i| i.time) < STARTUP_BG_SECS {
+                ctx.request_repaint();
+            } else {
+                self.startup_bg.remove();
+                ctx.request_repaint();
+            }
+        }
         let mut actions = Vec::new();
         self.global_keys(&ctx, &mut actions);
 
