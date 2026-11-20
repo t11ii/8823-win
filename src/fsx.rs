@@ -378,38 +378,14 @@ pub fn human_size(n: u64) -> String {
     if i == 0 { format!("{n} B") } else { format!("{f:.1} {}", U[i]) }
 }
 
-/// "2026/11/20 21:30" in local time. Called for every visible row on every frame.
 pub fn format_time(t: Option<SystemTime>) -> String {
-    let Some(t) = t else { return String::new() };
-    let utc: chrono::DateTime<chrono::Utc> = t.into();
-    utc.with_timezone(&local_offset(utc.timestamp())).format("%Y/%m/%d %H:%M").to_string()
-}
-
-/// The local UTC offset at `ts` (Unix seconds), cached.
-///
-/// Converting to `chrono::Local` on Windows asks the OS for the time-zone rules on every
-/// single call (`GetTimeZoneInformationForYear`, which reads the registry). With a date on
-/// every visible row and a repaint on every mouse move, that made the list sluggish on
-/// Windows only. Offsets only change on 15-minute boundaries (every real time zone and DST
-/// rule is a multiple of 15 minutes), so one lookup per 15-minute bucket is exact. The cache
-/// is dropped every minute so a time-zone change in Settings still shows up.
-fn local_offset(ts: i64) -> chrono::FixedOffset {
-    use chrono::{Offset, TimeZone};
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-    const BUCKET: i64 = 15 * 60;
-    static CACHE: Mutex<Option<(Instant, HashMap<i64, chrono::FixedOffset>)>> = Mutex::new(None);
-
-    let key = ts.div_euclid(BUCKET);
-    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if guard.as_ref().is_none_or(|(at, m)| at.elapsed() > Duration::from_secs(60) || m.len() > 4096) {
-        *guard = Some((Instant::now(), HashMap::new()));
+    match t {
+        Some(t) => {
+            let dt: chrono::DateTime<chrono::Local> = t.into();
+            dt.format("%Y/%m/%d %H:%M").to_string()
+        }
+        None => String::new(),
     }
-    let map = &mut guard.as_mut().expect("just set").1;
-    *map.entry(key).or_insert_with(|| {
-        let start = chrono::DateTime::from_timestamp(key * BUCKET, 0).unwrap_or_default();
-        chrono::Local.offset_from_utc_datetime(&start.naive_utc()).fix()
-    })
 }
 
 #[cfg(test)]
@@ -431,42 +407,5 @@ mod tests {
         assert!(names.contains(&"ﾊﾝｶｸ.txt"));
         assert_eq!(unique_target(&dir, "日本語ファイル.txt").file_name().unwrap(), "日本語ファイル (2).txt");
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn cached_dates_match_chrono_local() {
-        // Every 7 hours 13 minutes over ~10 years, crossing DST changes where the zone has them.
-        let base = 1_500_000_000i64;
-        for i in 0..12_000i64 {
-            let ts = base + i * (7 * 3600 + 13 * 60);
-            let t = SystemTime::UNIX_EPOCH + Duration::from_secs(ts as u64);
-            let want: chrono::DateTime<chrono::Local> = t.into();
-            assert_eq!(format_time(Some(t)), want.format("%Y/%m/%d %H:%M").to_string());
-        }
-        assert_eq!(format_time(None), "");
-    }
-
-    /// `cargo test --release date_speed -- --ignored --nocapture`
-    #[test]
-    #[ignore]
-    fn date_speed() {
-        let now = SystemTime::now();
-        let times: Vec<SystemTime> = (0..2_000u64).map(|i| now - Duration::from_secs(i * 5_000)).collect();
-        let t0 = Instant::now();
-        for t in &times {
-            let dt: chrono::DateTime<chrono::Local> = (*t).into();
-            std::hint::black_box(dt.format("%Y/%m/%d %H:%M").to_string());
-        }
-        let old = t0.elapsed();
-        let t0 = Instant::now();
-        for t in &times {
-            std::hint::black_box(format_time(Some(*t)));
-        }
-        let new = t0.elapsed();
-        println!(
-            "DATE_SPEED per row: chrono::Local {:.1} us, cached {:.1} us",
-            old.as_secs_f64() * 1e6 / times.len() as f64,
-            new.as_secs_f64() * 1e6 / times.len() as f64
-        );
     }
 }
