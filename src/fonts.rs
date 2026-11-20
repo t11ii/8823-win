@@ -3,7 +3,8 @@
 //! The UI uses "8823 Gothic", bundled into the binary: JetBrains Mono for Latin and
 //! BIZ UDゴシック for Japanese, merged into ONE font by `tools/build_font.py`.
 //! Because both scripts share one set of vertical metrics, mixed names like
-//! "2610_研究AIを作る.pdf" sit on a single baseline. (Pairing a Latin font with a
+//! "2610_研究AIを作る.pdf" sit on a single baseline, and the Japanese glyphs are scaled
+//! to 92% and lowered slightly so they line up optically with the Latin. (Pairing a Latin font with a
 //! separate Japanese fallback makes kana/kanji ride higher or lower than the Latin.)
 //! The system's Japanese font stays loaded as a last resort for rare glyphs.
 
