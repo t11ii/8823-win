@@ -33,7 +33,31 @@ fn main() -> eframe::Result {
         viewport,
         ..Default::default()
     };
+    run(options)
+}
+
+#[cfg(not(windows))]
+fn run(options: eframe::NativeOptions) -> eframe::Result {
     eframe::run_native("8823", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
+}
+
+/// Windows: draw with Direct3D 12, and fall back to OpenGL if it can't start (very old GPU,
+/// remote desktop without a GPU…). `RENDERER_8823=gl` forces OpenGL.
+#[cfg(windows)]
+fn run(options: eframe::NativeOptions) -> eframe::Result {
+    use eframe::Renderer;
+    let force_gl = std::env::var("RENDERER_8823").is_ok_and(|v| v.eq_ignore_ascii_case("gl"));
+    if !force_gl {
+        let mut o = options.clone();
+        o.renderer = Renderer::Wgpu;
+        match eframe::run_native("8823", o, Box::new(|cc| Ok(Box::new(app::App::new(cc))))) {
+            Err(eframe::Error::Wgpu(_)) => {} // try OpenGL below
+            other => return other,
+        }
+    }
+    let mut o = options;
+    o.renderer = Renderer::Glow;
+    eframe::run_native("8823", o, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
 }
 
 #[cfg(test)]

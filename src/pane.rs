@@ -154,13 +154,17 @@ impl Pane {
         }
     }
 
-    pub fn set_entries(&mut self, mut entries: Vec<Entry>, show_hidden: bool) {
+    /// `sorted`: the order `entries` already have; they are only re-sorted if the user
+    /// changed the sort while the listing was running.
+    pub fn set_entries(&mut self, mut entries: Vec<Entry>, sorted: (SortKey, bool), show_hidden: bool) {
         let keep = self
             .pending_select
             .take()
             .or_else(|| self.cursor_entry().map(|e| e.path.clone()));
         let (sort, asc) = (self.sort, self.asc);
-        entries.sort_by(|a, b| fsx::compare(a, b, sort, asc));
+        if sorted != (sort, asc) {
+            entries.sort_by(|a, b| fsx::compare(a, b, sort, asc));
+        }
         self.entries = entries;
         self.selected.clear();
         self.rebuild_view(show_hidden);
@@ -1023,5 +1027,74 @@ impl Columns {
         let size = take(w.size);
         let date = take(w.date);
         Columns { name, folder, ext, size, date }
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use std::time::{Duration, Instant, SystemTime};
+
+    fn entries(n: usize) -> Vec<Entry> {
+        let words = ["研究", "資料", "report", "写真", "IMG_", "議事録", "プロジェクト", "final", "ﾃｽﾄ", "draft"];
+        let exts = ["pdf", "jpg", "txt", "xlsx", "png", "docx", "zip"];
+        (0..n)
+            .map(|i| {
+                let name = format!("{}{}_{}{}.{}", i % 97, words[i % words.len()], words[(i / 7) % words.len()], i, exts[i % exts.len()]);
+                let mut e = Entry::new(PathBuf::from(format!("/x/{name}")), name.into(), None, None);
+                e.size = (i as u64 * 7919) % 50_000_000;
+                e.modified = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000 + i as u64 * 3_600));
+                e
+            })
+            .collect()
+    }
+
+    /// `cargo test --release bench_ -- --ignored --nocapture --test-threads 1`
+    #[test]
+    #[ignore]
+    fn bench_list_frames() {
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx);
+        crate::theme::install(&ctx);
+        let mut thumbs = Thumbs::new(&ctx);
+        let mut pane = Pane::new(PathBuf::from("/x"));
+        let unsorted = (SortKey::Size, false); // anything but the pane's own order
+        pane.set_entries(entries(20_000), unsorted, false);
+        let input = |t: f64, y: f32| egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1400.0, 900.0))),
+            time: Some(t),
+            events: vec![egui::Event::PointerMoved(pos2(500.0, y))],
+            ..Default::default()
+        };
+        let mut frame = |pane: &mut Pane, t: f64, y: f32| {
+            let mut out = Vec::new();
+            let _ = ctx.run_ui(input(t, y), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| pane.ui(ui, 0, true, false, &mut thumbs, &mut out));
+            });
+        };
+        for i in 0..30 {
+            frame(&mut pane, i as f64 / 60.0, 300.0); // warm-up: glyph atlas, caches
+        }
+        // Hover: mouse moves over a still list.
+        let n = 300;
+        let t0 = Instant::now();
+        for i in 0..n {
+            frame(&mut pane, 1.0 + i as f64 / 60.0, 100.0 + (i % 700) as f32);
+        }
+        let hover = t0.elapsed() / n;
+        // Scroll: a new page of rows each frame (cursor jumps a page).
+        let t0 = Instant::now();
+        for i in 0..n {
+            pane.move_cursor((i * 35) as isize, false);
+            frame(&mut pane, 10.0 + i as f64 / 60.0, 300.0);
+        }
+        let scroll = t0.elapsed() / n;
+        println!("BENCH frame: hover {hover:?}, scroll {scroll:?}");
+
+        let es = entries(100_000);
+        let mut p2 = Pane::new(PathBuf::from("/x"));
+        let t0 = Instant::now();
+        p2.set_entries(es, unsorted, false);
+        println!("BENCH sorting 100k names: {:?} (done on the listing thread)", t0.elapsed());
     }
 }

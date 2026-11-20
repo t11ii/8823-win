@@ -23,6 +23,10 @@ winresource = { version = "0.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+# Windows draws through Direct3D 12 (wgpu): OpenGL drivers on Windows are often slow and
+# make mouse moves, scrolling and window resizing stutter. OpenGL (glow) stays as fallback.
+eframe = { version = "0.37", default-features = false, features = ["wgpu_no_default_features"] }
+wgpu = { version = "30", default-features = false, features = ["std", "dx12"] }
 
 [profile.release]
 opt-level = 3
@@ -44,6 +48,15 @@ opt-level = 3
 [profile.release.package.epaint]
 opt-level = 3
 [profile.release.package.harfrust]
+opt-level = 3
+# the Direct3D 12 renderer on Windows,
+[profile.release.package.wgpu]
+opt-level = 3
+[profile.release.package.wgpu-core]
+opt-level = 3
+[profile.release.package.wgpu-hal]
+opt-level = 3
+[profile.release.package.egui-wgpu]
 opt-level = 3
 # name folding for sorting and filtering,
 [profile.release.package.unicode-normalization]

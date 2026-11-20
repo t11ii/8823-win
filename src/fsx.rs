@@ -113,7 +113,8 @@ pub fn compare(a: &Entry, b: &Entry, key: SortKey, asc: bool) -> Ordering {
 // Background messages
 
 pub enum Msg {
-    Listing { pane: usize, req: u64, path: PathBuf, result: Result<Vec<Entry>, String> },
+    /// `sorted`: the order the entries are already in, so the UI thread need not sort them.
+    Listing { pane: usize, req: u64, path: PathBuf, sorted: (SortKey, bool), result: Result<Vec<Entry>, String> },
     SearchBatch { pane: usize, req: u64, items: Vec<Entry>, scanned: usize },
     SearchDone { pane: usize, req: u64, scanned: usize },
     OpProgress(String),
@@ -132,10 +133,14 @@ impl Bg {
     }
 }
 
-pub fn spawn_listing(bg: Bg, pane: usize, req: u64, path: PathBuf) {
+/// List and sort `path` off the UI thread (sorting 100k names takes ~0.1 s).
+pub fn spawn_listing(bg: Bg, pane: usize, req: u64, path: PathBuf, sort: SortKey, asc: bool) {
     std::thread::spawn(move || {
-        let result = list_dir(&path);
-        bg.send(Msg::Listing { pane, req, path, result });
+        let result = list_dir(&path).map(|mut v| {
+            v.sort_by(|a, b| compare(a, b, sort, asc));
+            v
+        });
+        bg.send(Msg::Listing { pane, req, path, sorted: (sort, asc), result });
     });
 }
 

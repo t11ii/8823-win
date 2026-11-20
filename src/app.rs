@@ -158,7 +158,8 @@ impl App {
         pane.req = req;
         pane.loading = true;
         let path = pane.path.clone();
-        fsx::spawn_listing(self.bg(), p, req, path);
+        let (sort, asc) = (pane.sort, pane.asc);
+        fsx::spawn_listing(self.bg(), p, req, path, sort, asc);
     }
 
     fn navigate(&mut self, p: usize, path: PathBuf, record: bool) {
@@ -446,7 +447,7 @@ impl App {
     fn poll(&mut self) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                Msg::Listing { pane, req, path, result } => {
+                Msg::Listing { pane, req, path, sorted, result } => {
                     let sh = self.show_hidden;
                     let Some(p) = self.pane_for(pane, req) else { continue };
                     if p.path != path {
@@ -456,11 +457,11 @@ impl App {
                     match result {
                         Ok(entries) => {
                             p.error = None;
-                            p.set_entries(entries, sh);
+                            p.set_entries(entries, sorted, sh);
                         }
                         Err(e) => {
                             p.error = Some(e);
-                            p.set_entries(Vec::new(), sh);
+                            p.set_entries(Vec::new(), sorted, sh);
                         }
                     }
                 }
