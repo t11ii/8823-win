@@ -21,15 +21,21 @@ jobs:
       - name: Report size
         shell: bash
         run: ls -l target/release/8823.exe
+      - name: Package zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path target/release/8823.exe -DestinationPath dist/8823-win.zip -CompressionLevel Optimal -Force
+          Get-Item dist/8823-win.zip | Format-Table Name, Length
       - uses: actions/upload-artifact@v4
         with:
           name: 8823-windows-x64
-          path: target/release/8823.exe
+          path: dist/8823-win.zip
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/8823.exe
+          files: dist/8823-win.zip
 
   macos:
     runs-on: macos-latest
@@ -60,7 +66,7 @@ jobs:
   # Every successful build on main replaces the rolling "latest" release, so the
   # newest binaries are always at
   #   https://github.com/t11ii/8823-win/releases/latest
-  # (direct links: .../releases/latest/download/8823.exe and 8823-mac.zip).
+  # (direct links: .../releases/latest/download/8823-win.zip and 8823-mac.zip).
   # Pull request builds are not published. Version tags (v*) still get their own
   # release from the steps above.
   publish-latest:
@@ -86,12 +92,12 @@ jobs:
           stamp=$(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M JST')
           gh release delete latest --cleanup-tag --yes || true
           gh release create latest \
-            dist/8823-windows-x64/8823.exe \
+            dist/8823-windows-x64/8823-win.zip \
             dist/8823-mac-arm64/8823-mac.zip \
             --target "$GITHUB_SHA" \
             --title "最新ビルド ($stamp, $short)" \
             --latest \
             --notes "main の最新ビルドです（コミット $GITHUB_SHA）。新しいビルドが成功するたびに自動で置き換わります。
 
-          - Windows (x64): 8823.exe
+          - Windows (x64): 8823-win.zip（展開して 8823.exe を実行）
           - Mac (Apple Silicon): 8823-mac.zip"
