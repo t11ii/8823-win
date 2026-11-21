@@ -85,6 +85,8 @@ pub enum Action {
     OpenInNewTab(PathBuf),
     /// Add the folder to the sidebar favourites, or remove it if it is already there.
     ToggleFavorite(PathBuf),
+    /// The pointer dragged the pane's selection; hand it to the OS so it can leave the window.
+    DragOut(usize),
 }
 
 /// Where the app publishes the favourite folders (egui temp data), so menus here can say Add or Remove.
@@ -711,7 +713,7 @@ impl Pane {
 
     fn row_ui(&mut self, ui: &mut egui::Ui, id: usize, vi: usize, active: bool, out: &mut Vec<Action>) {
         let ei = self.view[vi];
-        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
         let is_cursor = vi == self.cursor;
         let is_sel = self.selected.contains(&ei);
         let pal = theme::pal(ui);
@@ -837,6 +839,24 @@ impl Pane {
                 self.anchor = vi;
             }
         }
+        // Dragging an item takes the selection along (just this item if it is not selected).
+        // Wait for real movement: egui also calls a long still press a drag.
+        if resp.dragged_by(egui::PointerButton::Primary) {
+            let moved = ui.input(|i| match (i.pointer.press_origin(), i.pointer.latest_pos()) {
+                (Some(a), Some(b)) => a.distance(b) > 6.0,
+                _ => false,
+            });
+            if moved {
+                if !self.selected.contains(&ei) {
+                    self.selected.clear();
+                    self.selected.insert(ei);
+                    self.cursor = vi;
+                    self.anchor = vi;
+                }
+                out.push(Action::Activate(id));
+                out.push(Action::DragOut(id));
+            }
+        }
         if resp.middle_clicked() && is_dir {
             out.push(Action::OpenInNewTab(path.clone()));
         }
@@ -886,7 +906,7 @@ impl Pane {
 
     fn tile_ui(&mut self, ui: &mut egui::Ui, id: usize, vi: usize, active: bool, thumbs: &mut Thumbs, out: &mut Vec<Action>) {
         let ei = self.view[vi];
-        let (rect, resp) = ui.allocate_exact_size(vec2(TILE_W, TILE_H), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(vec2(TILE_W, TILE_H), Sense::click_and_drag());
         let is_cursor = vi == self.cursor;
         let is_sel = self.selected.contains(&ei);
         let pal = theme::pal(ui);
