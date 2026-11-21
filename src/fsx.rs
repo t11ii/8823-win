@@ -75,13 +75,81 @@ fn is_hidden(name: &str, _md: Option<&Metadata>) -> bool {
 pub fn list_dir(path: &Path) -> Result<Vec<Entry>, String> {
     let rd = std::fs::read_dir(path).map_err(|e| e.to_string())?;
     let mut out = Vec::with_capacity(256);
+    push_entries(rd, &mut out);
+    #[cfg(windows)]
+    merge_public_desktop(path, &mut out);
+    Ok(out)
+}
+
+fn push_entries(rd: std::fs::ReadDir, out: &mut Vec<Entry>) {
     for de in rd.flatten() {
         // On Windows both of these come straight from FindNextFileW: no extra syscalls.
         let md = de.metadata().ok();
         let ft = de.file_type().ok();
         out.push(Entry::new(de.path(), de.file_name(), md, ft));
     }
-    Ok(out)
+}
+
+/// Explorer shows the user's Desktop merged with the all-users Public Desktop (where
+/// installers put their shortcuts). Do the same, so Desktop looks like the real desktop.
+#[cfg(windows)]
+fn merge_public_desktop(path: &Path, out: &mut Vec<Entry>) {
+    use std::sync::OnceLock;
+    static DIRS: OnceLock<Option<(PathBuf, PathBuf)>> = OnceLock::new();
+    let dirs = DIRS.get_or_init(|| {
+        let user = win::known_folder(&win::FOLDERID_Desktop)?;
+        let public = win::known_folder(&win::FOLDERID_PublicDesktop)?;
+        (user != public).then_some((user, public))
+    });
+    let Some((user, public)) = dirs else { return };
+    if !same_dir(path, user) {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(public) else { return };
+    let mut extra = Vec::new();
+    push_entries(rd, &mut extra);
+    // A name on the user's own Desktop wins, as in Explorer.
+    let mine: std::collections::HashSet<String> = out.iter().map(|e| e.key.clone()).collect();
+    out.extend(extra.into_iter().filter(|e| !mine.contains(&e.key)));
+}
+
+/// Windows paths compare case-insensitively and may differ in a trailing separator.
+#[cfg(windows)]
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let norm = |p: &Path| p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase();
+    norm(a) == norm(b)
+}
+
+#[cfg(windows)]
+mod win {
+    use std::os::windows::ffi::OsStringExt;
+    use std::path::PathBuf;
+    pub use windows_sys::Win32::UI::Shell::{
+        FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures,
+        FOLDERID_PublicDesktop, FOLDERID_Videos,
+    };
+    use windows_sys::Win32::UI::Shell::{KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath};
+    use windows_sys::core::GUID;
+
+    /// Where Windows really keeps a standard folder. Desktop, Documents and Pictures are
+    /// often redirected (OneDrive backup, a moved folder, a company policy), so
+    /// %USERPROFILE%\Desktop can be an empty leftover while the real one is elsewhere.
+    pub fn known_folder(id: &GUID) -> Option<PathBuf> {
+        let mut p: *mut u16 = std::ptr::null_mut();
+        // SAFETY: on success `p` is a NUL-terminated wide string we must free with
+        // CoTaskMemFree; on failure it is NULL, and CoTaskMemFree(NULL) is a no-op.
+        unsafe {
+            let hr = SHGetKnownFolderPath(id, KF_FLAG_DONT_VERIFY as u32, std::ptr::null_mut(), &mut p);
+            let out = if hr >= 0 && !p.is_null() {
+                let len = (0..).take_while(|&i| *p.add(i) != 0).count();
+                Some(PathBuf::from(std::ffi::OsString::from_wide(std::slice::from_raw_parts(p, len))))
+            } else {
+                None
+            };
+            windows_sys::Win32::System::Com::CoTaskMemFree(p as *const _);
+            out.filter(|p| !p.as_os_str().is_empty())
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -327,20 +395,52 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// The standard folders under the home folder, as (label, where it really is, the
+/// plain `home/<label>` path that older versions used). The two paths differ when
+/// Windows has redirected the folder, e.g. Desktop moved into OneDrive.
+pub fn standard_folders() -> Vec<(&'static str, PathBuf, PathBuf)> {
+    let home = home_dir();
+    [
+        "Desktop",
+        "Documents",
+        "Downloads",
+        "Pictures",
+        "Music",
+        "Videos",
+        "Movies",
+        "Applications",
+    ]
+    .into_iter()
+    .map(|label| {
+        let legacy = home.join(label);
+        (label, standard_folder(label).unwrap_or_else(|| legacy.clone()), legacy)
+    })
+    .collect()
+}
+
+#[cfg(windows)]
+fn standard_folder(label: &str) -> Option<PathBuf> {
+    let id = match label {
+        "Desktop" => &win::FOLDERID_Desktop,
+        "Documents" => &win::FOLDERID_Documents,
+        "Downloads" => &win::FOLDERID_Downloads,
+        "Pictures" => &win::FOLDERID_Pictures,
+        "Music" => &win::FOLDERID_Music,
+        "Videos" => &win::FOLDERID_Videos,
+        _ => return None,
+    };
+    win::known_folder(id)
+}
+
+#[cfg(not(windows))]
+fn standard_folder(_label: &str) -> Option<PathBuf> {
+    None
+}
+
 pub fn quick_access() -> Vec<(String, PathBuf)> {
     let home = home_dir();
     let mut v = vec![("Home".to_string(), home.clone())];
-    for (label, sub) in [
-        ("Desktop", "Desktop"),
-        ("Documents", "Documents"),
-        ("Downloads", "Downloads"),
-        ("Pictures", "Pictures"),
-        ("Music", "Music"),
-        ("Videos", "Videos"),
-        ("Movies", "Movies"),
-        ("Applications", "Applications"),
-    ] {
-        let p = home.join(sub);
+    for (label, p, _) in standard_folders() {
         if p.is_dir() {
             v.push((label.to_string(), p));
         }
@@ -412,5 +512,19 @@ mod tests {
         assert!(names.contains(&"ﾊﾝｶｸ.txt"));
         assert_eq!(unique_target(&dir, "日本語ファイル.txt").file_name().unwrap(), "日本語ファイル (2).txt");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn standard_folders_resolve_through_windows() {
+        let desktop = win::known_folder(&win::FOLDERID_Desktop).expect("Desktop known folder");
+        assert!(desktop.is_absolute(), "{desktop:?}");
+        let (_, real, _) = standard_folders().into_iter().find(|(l, _, _)| *l == "Desktop").unwrap();
+        assert_eq!(real, desktop);
+        assert!(same_dir(Path::new(r"C:\Users\A\Desktop\"), Path::new(r"c:\users\a\desktop")));
+        // Listing the Desktop must not fail even with the Public Desktop merged in.
+        if desktop.is_dir() {
+            list_dir(&desktop).unwrap();
+        }
     }
 }

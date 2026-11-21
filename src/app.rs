@@ -1268,9 +1268,26 @@ fn section_with_add(ui: &mut egui::Ui, title: &str, tip: &str) -> bool {
 fn initial_favorites() -> Vec<(String, PathBuf)> {
     let standard = fsx::quick_access();
     match crate::config::load_favorites() {
-        Some(paths) => paths.into_iter().map(|p| (favorite_name(&p, &standard), p)).collect(),
+        Some(paths) => paths
+            .into_iter()
+            .map(|p| {
+                let p = fix_redirected(p);
+                (favorite_name(&p, &standard), p)
+            })
+            .collect(),
         None => standard,
     }
+}
+
+/// Favourites saved by older versions point at `home/Desktop` etc. even when Windows has
+/// moved that folder (often into OneDrive); point them at the real folder instead.
+fn fix_redirected(p: PathBuf) -> PathBuf {
+    for (_, real, legacy) in fsx::standard_folders() {
+        if p == legacy && real != legacy && real.is_dir() {
+            return real;
+        }
+    }
+    p
 }
 
 /// Standard folders keep their names ("Home", "Desktop"…); any other folder shows its own name.
