@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod dragout;
 mod fonts;
 mod fsx;
 mod pace;
