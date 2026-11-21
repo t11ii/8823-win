@@ -66,6 +66,14 @@ pub struct App {
     startup_bg: crate::plat::StartupBackground,
     /// Frame-rate cap on Windows, where vsync is off (see `pace.rs`).
     pacer: crate::pace::Pacer,
+    /// The last drag of files out of the window (see `dragout.rs`).
+    drag_out: Option<DragOut>,
+}
+
+struct DragOut {
+    paths: Vec<PathBuf>,
+    /// When egui saw the mouse button released after the drag; None while it is still going.
+    released: Option<std::time::Instant>,
 }
 
 impl App {
@@ -107,6 +115,7 @@ impl App {
             font,
             startup_bg,
             pacer: crate::pace::Pacer::new(),
+            drag_out: None,
         };
         if app.font.is_none() {
             app.status = "No Japanese font found; set FONT_8823 to a .ttf/.ttc path".into();
@@ -522,6 +531,39 @@ impl App {
         fsx::spawn_search(self.bg(), p, req, root, query, cancel);
     }
 
+    /// Hand the pane's selection to the OS as a file drag (see `dragout.rs`). Once per press:
+    /// egui keeps reporting the drag until it sees the button released.
+    fn start_drag_out(&mut self, frame: &eframe::Frame, p: usize) {
+        if self.drag_out.as_ref().is_some_and(|d| d.released.is_none()) {
+            return;
+        }
+        let paths = self.panes[p].targets();
+        if paths.is_empty() {
+            return;
+        }
+        crate::dragout::start(frame, &paths);
+        self.drag_out = Some(DragOut { paths, released: None });
+    }
+
+    /// After a drag out: when the button is up, reload if the target moved files away, and
+    /// forget the drag a little later (it is kept briefly to ignore a drop back onto us).
+    fn drag_out_tick(&mut self, ctx: &egui::Context) {
+        let Some(d) = &mut self.drag_out else { return };
+        match d.released {
+            None if !ctx.input(|i| i.pointer.any_down()) => {
+                d.released = Some(std::time::Instant::now());
+                if d.paths.iter().any(|p| !p.exists()) {
+                    for p in 0..if self.dual { 2 } else { 1 } {
+                        self.load(p);
+                    }
+                }
+                ctx.request_repaint_after(std::time::Duration::from_secs(3));
+            }
+            Some(t) if t.elapsed().as_secs() >= 3 => self.drag_out = None,
+            _ => {}
+        }
+    }
+
     fn apply(&mut self, a: Action) {
         let sh = self.show_hidden;
         match a {
@@ -638,6 +680,8 @@ impl App {
                 self.dialog = Some(Dialog::NewFolder { pane: p, name: "新しいフォルダー".into(), focus: true });
             }
             Action::OpenInNewTab(path) => self.new_tab(path),
+            // Needs the window; handled in `ui` (start_drag_out).
+            Action::DragOut(_) => {}
             Action::ToggleFavorite(path) => {
                 if self.is_favorite(&path) {
                     self.remove_favorite(&path);
@@ -797,9 +841,11 @@ impl App {
             }
         }
 
-        // Files dropped from Explorer/Finder are copied into the active folder.
+        // Files dropped from Explorer/Finder are copied into the active folder. Our own drag
+        // dropped back onto the window is ignored (it would duplicate the files in place).
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
-        if !dropped.is_empty() {
+        let own = self.drag_out.as_ref().is_some_and(|d| dropped.iter().all(|p| d.paths.contains(p)));
+        if !dropped.is_empty() && !own {
             self.busy = true;
             fsx::spawn_paste(self.bg(), dropped, self.panes[self.active].path.clone(), false);
         }
@@ -1066,7 +1112,7 @@ impl App {
 const STARTUP_BG_SECS: f64 = 0.6;
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.pacer.frame_start();
         let ctx = ui.ctx().clone();
         self.poll();
@@ -1175,7 +1221,13 @@ impl eframe::App for App {
 
         self.dialogs(&ctx);
         for a in actions {
-            self.apply(a);
+            match a {
+                Action::DragOut(p) => self.start_drag_out(frame, p),
+                a => self.apply(a),
+            }
+        }
+        if self.drag_out.is_some() {
+            self.drag_out_tick(&ctx);
         }
         self.pacer.frame_end();
     }
