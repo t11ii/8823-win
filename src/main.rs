@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod fonts;
 mod fsx;
+mod pace;
 mod pane;
 mod plat;
 mod text;
@@ -29,10 +30,19 @@ fn main() -> eframe::Result {
         .with_min_inner_size([520.0, 320.0])
         .with_drag_and_drop(true);
     viewport.icon = app_icon();
-    let options = eframe::NativeOptions {
+    #[allow(unused_mut)]
+    let mut options = eframe::NativeOptions {
         viewport,
         ..Default::default()
     };
+    // Windows: don't block in SwapBuffers until vsync. With vsync every frame stalled the UI
+    // thread for one refresh period (31 ms on a 32 Hz Remote Desktop display), so scrolling
+    // and key repeat crawled. Windowed GL output is composited by DWM, so this does not tear.
+    // The frame rate is capped in `pace.rs` instead.
+    #[cfg(windows)]
+    {
+        options.glow_options.vsync = false;
+    }
     eframe::run_native("8823", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
 }
 
