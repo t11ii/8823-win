@@ -17,30 +17,65 @@ enum Dialog {
     Help,
 }
 
-/// A tab: one or two panes. The active tab's state lives directly in `App`
-/// (`panes`, `active`, `dual`); the others are parked in `App::tabs`.
+/// A tab: one folder view. Each column of the dual view has its own row of tabs; the
+/// active tab's pane lives in `App::panes[side]` and the others are parked in `Column::tabs`.
 struct Tab {
     /// Stable identity, so a tab can be dragged while its position changes.
     id: u64,
-    panes: [Pane; 2],
-    active: usize,
-    dual: bool,
+    pane: Pane,
 }
 
 impl Tab {
     fn new(id: u64, path: PathBuf) -> Self {
-        Tab { id, panes: [Pane::new(path.clone()), Pane::new(path)], active: 0, dual: false }
+        Tab { id, pane: Pane::new(path) }
     }
+}
+
+/// The tabs of one column (left/top = 0, right/bottom = 1).
+struct Column {
+    /// All tabs in order. `tabs[cur].pane` is a placeholder while that tab is shown.
+    tabs: Vec<Tab>,
+    cur: usize,
+}
+
+impl Column {
+    fn new(id: u64) -> Self {
+        Column { tabs: vec![Tab::new(id, PathBuf::new())], cur: 0 }
+    }
+}
+
+/// Where the tab strips and panes were drawn this frame, for dragging tabs between columns.
+#[derive(Default)]
+struct TabLayout {
+    /// The area of each column's tab strip (drop zone).
+    zones: [Option<egui::Rect>; 2],
+    /// Each tab's rectangle, per column, in order.
+    rects: [Vec<egui::Rect>; 2],
+    /// Each column's pane area (dropping a tab there appends it to that column).
+    panes: [Option<egui::Rect>; 2],
+    /// A tab being dragged this frame: (column, index).
+    dragging: Option<(usize, usize)>,
+    /// A tab released this frame: (column, index).
+    dropped: Option<(usize, usize)>,
+}
+
+/// Where a dragged tab would land in the other column.
+#[derive(Clone, Copy)]
+enum TabTarget {
+    /// In the column's tab strip, before tab `at`.
+    Strip(usize, usize),
+    /// On the column's pane: at the end of its strip.
+    Pane(usize),
 }
 
 pub struct App {
     panes: [Pane; 2],
     active: usize,
     dual: bool,
-    /// All tabs in order. `tabs[cur]` is a placeholder while that tab is active.
-    tabs: Vec<Tab>,
-    cur: usize,
+    /// The tabs of each column. In single-pane mode only column 0 is shown.
+    cols: [Column; 2],
     next_tab_id: u64,
+    tab_layout: TabLayout,
     /// Tab strip on the left (stacked vertically) instead of along the top.
     tabs_vertical: bool,
     /// Dual pane arranged top/bottom instead of left/right.
@@ -89,9 +124,9 @@ impl App {
             panes: [Pane::new(start.clone()), Pane::new(start)],
             active: 0,
             dual: false,
-            tabs: vec![Tab::new(0, PathBuf::new())],
-            cur: 0,
-            next_tab_id: 1,
+            cols: [Column::new(0), Column::new(1)],
+            next_tab_id: 2,
+            tab_layout: TabLayout::default(),
             tabs_vertical: false,
             split_stacked: false,
             thumbs: crate::thumbs::Thumbs::new(&cc.egui_ctx),
@@ -198,110 +233,186 @@ impl App {
         self.load(p);
     }
 
-    /// Swap the live tab state with the slot `tabs[cur]`.
-    fn swap_cur(&mut self) {
-        let t = &mut self.tabs[self.cur];
-        std::mem::swap(&mut self.panes, &mut t.panes);
-        std::mem::swap(&mut self.active, &mut t.active);
-        std::mem::swap(&mut self.dual, &mut t.dual);
+    /// Swap column `side`'s live pane with its slot `tabs[cur]`.
+    fn swap_cur(&mut self, side: usize) {
+        let c = &mut self.cols[side];
+        std::mem::swap(&mut self.panes[side], &mut c.tabs[c.cur].pane);
     }
 
-    fn switch_tab(&mut self, to: usize) {
-        if to >= self.tabs.len() || to == self.cur {
+    fn switch_tab(&mut self, side: usize, to: usize) {
+        if to >= self.cols[side].tabs.len() || to == self.cols[side].cur {
             return;
         }
-        self.swap_cur();
-        self.cur = to;
-        self.swap_cur();
+        self.swap_cur(side);
+        self.cols[side].cur = to;
+        self.swap_cur(side);
+        self.panes[side].scroll_to_cursor = true;
         // The folder may have changed while the tab was in the background.
-        self.refresh_all();
+        if self.panes[side].search.is_none() {
+            self.load(side);
+        }
     }
 
-    fn new_tab(&mut self, path: PathBuf) {
+    fn new_tab(&mut self, side: usize, path: PathBuf) {
         let sh = self.show_hidden;
         let id = self.next_tab_id;
         self.next_tab_id += 1;
-        let gallery = self.panes[self.active].gallery;
+        let gallery = self.panes[side].gallery;
         let mut tab = Tab::new(id, path);
-        tab.panes[0].gallery = gallery;
-        self.tabs.insert(self.cur + 1, tab);
-        self.switch_tab(self.cur + 1);
-        for p in &mut self.panes {
-            p.rebuild_view(sh);
-        }
+        tab.pane.gallery = gallery;
+        let at = self.cols[side].cur + 1;
+        self.cols[side].tabs.insert(at, tab);
+        self.switch_tab(side, at);
+        self.panes[side].rebuild_view(sh);
+        self.active = side;
     }
 
-    fn close_tab(&mut self, i: usize) {
-        if self.tabs.len() <= 1 {
+    /// Close tab `i` of a column. Closing the last tab of a column in the dual view closes
+    /// that column (back to a single pane); the very last visible tab can't be closed.
+    fn close_tab(&mut self, side: usize, i: usize) {
+        if self.cols[side].tabs.len() <= 1 {
+            if self.dual {
+                let pane = std::mem::replace(&mut self.panes[side], Pane::new(PathBuf::new()));
+                cancel_search(pane);
+                self.cols[side].tabs.clear();
+                self.drop_empty_column(side);
+            }
             return;
         }
-        if i == self.cur {
-            let to = if i + 1 < self.tabs.len() { i + 1 } else { i - 1 };
-            self.switch_tab(to);
+        let c = &self.cols[side];
+        if i == c.cur {
+            let to = if i + 1 < c.tabs.len() { i + 1 } else { i - 1 };
+            self.switch_tab(side, to);
         }
-        let mut t = self.tabs.remove(i);
-        for p in &mut t.panes {
-            if let Some(s) = p.search.take() {
-                s.cancel.store(true, Ordering::Relaxed);
-            }
-        }
-        if i < self.cur {
-            self.cur -= 1;
+        let t = self.cols[side].tabs.remove(i);
+        cancel_search(t.pane);
+        if i < self.cols[side].cur {
+            self.cols[side].cur -= 1;
         }
     }
 
-    fn tab_title(&self, i: usize) -> String {
-        let (panes, active) = if i == self.cur { (&self.panes, self.active) } else { (&self.tabs[i].panes, self.tabs[i].active) };
-        let p = &panes[active].path;
+    /// Column `side` has no tabs left: show the other column alone, as column 0, and give
+    /// column 1 a fresh tab for the next time the dual view is turned on.
+    fn drop_empty_column(&mut self, side: usize) {
+        if side == 0 {
+            self.cols.swap(0, 1);
+            self.panes.swap(0, 1);
+        }
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        self.cols[1] = Column::new(id);
+        self.panes[1] = Pane::new(self.panes[0].path.clone());
+        self.panes[1].gallery = self.panes[0].gallery;
+        self.load(1);
+        self.dual = false;
+        self.active = 0;
+    }
+
+    fn tab_pane(&self, side: usize, i: usize) -> &Pane {
+        if i == self.cols[side].cur { &self.panes[side] } else { &self.cols[side].tabs[i].pane }
+    }
+
+    fn tab_title(&self, side: usize, i: usize) -> String {
+        let p = &self.tab_pane(side, i).path;
         p.file_name().map(crate::text::display_name).unwrap_or_else(|| p.display().to_string())
     }
 
-    /// The pane a background result belongs to: in the active tab or a parked one.
-    fn pane_for(&mut self, pane: usize, req: u64) -> Option<&mut Pane> {
-        if self.panes[pane].req == req {
-            return Some(&mut self.panes[pane]);
+    fn tab_path(&self, side: usize, i: usize) -> String {
+        self.tab_pane(side, i).path.display().to_string()
+    }
+
+    /// The pane a background result belongs to: shown or parked in either column (tabs can
+    /// move between columns, so the request id alone decides).
+    fn pane_for(&mut self, _pane: usize, req: u64) -> Option<&mut Pane> {
+        if let Some(i) = (0..2).find(|&i| self.panes[i].req == req) {
+            return Some(&mut self.panes[i]);
         }
-        let cur = self.cur;
-        self.tabs
+        let curs = [self.cols[0].cur, self.cols[1].cur];
+        self.cols
             .iter_mut()
             .enumerate()
-            .filter(|(i, _)| *i != cur)
-            .map(|(_, t)| &mut t.panes[pane])
+            .flat_map(|(s, c)| c.tabs.iter_mut().enumerate().filter(move |(i, _)| *i != curs[s]).map(|(_, t)| &mut t.pane))
             .find(|p| p.req == req)
     }
 
-    fn move_tab(&mut self, from: usize, to: usize) {
-        if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
+    /// Reorder within a column.
+    fn move_tab(&mut self, side: usize, from: usize, to: usize) {
+        let c = &mut self.cols[side];
+        if from == to || from >= c.tabs.len() || to >= c.tabs.len() {
             return;
         }
-        let cur_id = self.tabs[self.cur].id;
-        let t = self.tabs.remove(from);
-        self.tabs.insert(to, t);
-        self.cur = self.tabs.iter().position(|t| t.id == cur_id).unwrap_or(0);
+        let cur_id = c.tabs[c.cur].id;
+        let t = c.tabs.remove(from);
+        c.tabs.insert(to, t);
+        c.cur = c.tabs.iter().position(|t| t.id == cur_id).unwrap_or(0);
     }
 
-    /// The tab strip: along the top (`vertical == false`) or stacked in a left column.
-    /// Click to switch, drag to reorder, middle-click or × to close.
-    fn tab_bar(&mut self, ui: &mut egui::Ui, vertical: bool) {
+    /// Move tab `i` of column `from` into column `to` before position `at` (clamped), show it
+    /// there and make that column active. A column left without tabs is closed.
+    fn move_tab_across(&mut self, from: usize, i: usize, to: usize, at: usize) {
+        if from == to || i >= self.cols[from].tabs.len() {
+            return;
+        }
+        // Take the tab out of its column, with its live pane if it was the shown one.
+        let tab = if self.cols[from].tabs.len() == 1 {
+            let mut t = self.cols[from].tabs.remove(0);
+            t.pane = std::mem::replace(&mut self.panes[from], Pane::new(PathBuf::new()));
+            t
+        } else {
+            let c = &self.cols[from];
+            if i == c.cur {
+                let next = if i + 1 < c.tabs.len() { i + 1 } else { i - 1 };
+                self.switch_tab(from, next);
+            }
+            let t = self.cols[from].tabs.remove(i);
+            if i < self.cols[from].cur {
+                self.cols[from].cur -= 1;
+            }
+            t
+        };
+        let c = &mut self.cols[to];
+        let at = at.min(c.tabs.len());
+        c.tabs.insert(at, tab);
+        if at <= c.cur {
+            c.cur += 1;
+        }
+        // Show it: park the column's current pane, then bring the moved one in.
+        self.swap_cur(to);
+        self.cols[to].cur = at;
+        self.swap_cur(to);
+        self.panes[to].scroll_to_cursor = true;
+        self.active = to;
+        if self.cols[from].tabs.is_empty() {
+            self.drop_empty_column(from);
+        }
+    }
+
+    /// The tab strip of column `side`: along the top (`vertical == false`) or stacked in a
+    /// left column. Click to switch, drag to reorder or to move to the other column,
+    /// middle-click or × to close.
+    fn tab_bar(&mut self, ui: &mut egui::Ui, side: usize, vertical: bool) {
         let mut switch = None;
         let mut close = None;
         let mut add = false;
         let mut rects: Vec<egui::Rect> = Vec::new();
-        let mut dragging: Option<usize> = None;
-        let n = self.tabs.len();
+        let n = self.cols[side].tabs.len();
+        // In the dual view any tab can be closed (the last one closes its column).
+        let closable = n > 1 || self.dual;
+        let cur = self.cols[side].cur;
+        let col_active = !self.dual || self.active == side;
         let font = egui::FontId::proportional(13.0);
         let mut body = |ui: &mut egui::Ui| {
             for i in 0..n {
-                let title = self.tab_title(i);
-                let selected = i == self.cur;
+                let title = self.tab_title(side, i);
+                let selected = i == cur;
                 let pal = theme::pal(ui);
                 let color = if selected { pal.strong } else { pal.weak };
                 let max_w = if vertical { (ui.available_width() - 30.0).max(40.0) } else { 180.0 };
                 let galley = theme::elided(ui, &title, font.clone(), color, max_w);
                 let text_w = galley.size().x.min(max_w);
-                let w = if vertical { ui.available_width() } else { text_w + 22.0 + if n > 1 { 20.0 } else { 0.0 } };
+                let w = if vertical { ui.available_width() } else { text_w + 22.0 + if closable { 20.0 } else { 0.0 } };
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 28.0), egui::Sense::hover());
-                let id = egui::Id::unique(("tab", self.tabs[i].id));
+                let id = egui::Id::unique(("tab", self.cols[side].tabs[i].id));
                 let r = ui.interact(rect, id, egui::Sense::click_and_drag());
                 let fill = if selected {
                     pal.surface
@@ -313,12 +424,14 @@ impl App {
                 ui.painter().rect_filled(rect, 6.0, fill);
                 if selected {
                     // Accent marker: under the tab when tabs are on top, beside it when on the left.
+                    // Dimmed in the column that isn't active.
                     let mark = if vertical {
                         egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top() + 6.0), egui::pos2(rect.left() + 3.0, rect.bottom() - 6.0))
                     } else {
                         egui::Rect::from_min_max(egui::pos2(rect.left() + 8.0, rect.bottom() - 2.5), egui::pos2(rect.right() - 8.0, rect.bottom() - 0.5))
                     };
-                    ui.painter().rect_filled(mark, 1.5, pal.accent);
+                    let c = if col_active { pal.accent } else { pal.accent.gamma_multiply(0.35) };
+                    ui.painter().rect_filled(mark, 1.5, c);
                 }
                 let tx = if vertical { 12.0 } else { 10.0 };
                 let text_clip = egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + tx + text_w, rect.bottom()));
@@ -327,7 +440,7 @@ impl App {
                     galley,
                     color,
                 );
-                let r = r.on_hover_text(self.tab_path(i));
+                let r = r.on_hover_text(self.tab_path(side, i));
                 if r.clicked() {
                     switch = Some(i);
                 }
@@ -335,10 +448,13 @@ impl App {
                     close = Some(i);
                 }
                 if r.dragged() {
-                    dragging = Some(i);
+                    self.tab_layout.dragging = Some((side, i));
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 }
-                if n > 1 {
+                if r.drag_stopped() {
+                    self.tab_layout.dropped = Some((side, i));
+                }
+                if closable {
                     let x_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 13.0, rect.center().y), egui::vec2(16.0, 16.0));
                     let xr = ui.interact(x_rect, id.with("close"), egui::Sense::click());
                     if xr.hovered() {
@@ -377,36 +493,127 @@ impl App {
             ui.spacing_mut().item_spacing.x = 2.0;
             body(ui);
         }
+        self.tab_layout.rects[side] = rects;
 
-        // Drag to reorder: move the dragged tab once the pointer passes a neighbour's middle.
-        if let (Some(i), Some(pos)) = (dragging, ui.ctx().pointer_interact_pos()) {
-            let along = |p: egui::Pos2| if vertical { p.y } else { p.x };
-            let mut to = i;
-            for (j, r) in rects.iter().enumerate() {
-                if (j > i && along(pos) > along(r.center())) || (j < i && along(pos) < along(r.center()) && to == i) {
-                    to = j;
-                }
-            }
-            if to != i {
-                self.move_tab(i, to);
-                switch = None;
-            }
-        }
         if let Some(i) = switch {
-            self.switch_tab(i);
+            self.switch_tab(side, i);
+            self.active = side;
         }
         if let Some(i) = close {
-            self.close_tab(i);
+            self.close_tab(side, i);
         }
         if add {
-            let p = self.panes[self.active].path.clone();
-            self.new_tab(p);
+            let p = self.panes[side].path.clone();
+            self.new_tab(side, p);
         }
     }
 
-    fn tab_path(&self, i: usize) -> String {
-        let (panes, active) = if i == self.cur { (&self.panes, self.active) } else { (&self.tabs[i].panes, self.tabs[i].active) };
-        panes[active].path.display().to_string()
+    /// A horizontal tab strip for column `side` in `rect`.
+    fn tab_strip_h(&mut self, ui: &mut egui::Ui, rect: egui::Rect, side: usize) {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect).id_salt(("tabstrip", side)), |ui| {
+            egui::ScrollArea::horizontal()
+                .id_salt(("tabs-scroll", side))
+                .max_width(rect.width())
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(ui, |ui| ui.horizontal(|ui| self.tab_bar(ui, side, false)));
+        });
+        self.tab_layout.zones[side] = Some(rect);
+    }
+
+    /// Where a tab dragged from column `from` would land if released at `pos`.
+    fn tab_target(&self, from: usize, pos: egui::Pos2) -> Option<TabTarget> {
+        if !self.dual {
+            return None;
+        }
+        let o = 1 - from;
+        let l = &self.tab_layout;
+        if l.zones[o].is_some_and(|z| z.expand(4.0).contains(pos)) {
+            let vertical = self.tabs_vertical;
+            let along = |p: egui::Pos2| if vertical { p.y } else { p.x };
+            let at = l.rects[o].iter().position(|r| along(pos) < along(r.center())).unwrap_or(l.rects[o].len());
+            return Some(TabTarget::Strip(o, at));
+        }
+        if l.panes[o].is_some_and(|r| r.contains(pos)) {
+            return Some(TabTarget::Pane(o));
+        }
+        None
+    }
+
+    /// After the strips and panes are drawn: reorder a dragged tab within its strip, or show
+    /// where it would go in the other column and move it there when released.
+    fn tab_drag(&mut self, ui: &egui::Ui) {
+        let ctx = ui.ctx();
+        let Some(pos) = ctx.pointer_latest_pos() else { return };
+        if let Some((side, i)) = self.tab_layout.dropped {
+            match self.tab_target(side, pos) {
+                Some(TabTarget::Strip(to, at)) => self.move_tab_across(side, i, to, at),
+                Some(TabTarget::Pane(to)) => self.move_tab_across(side, i, to, usize::MAX),
+                None => {}
+            }
+            return;
+        }
+        let Some((side, i)) = self.tab_layout.dragging else { return };
+        let pal = theme::pal(ui);
+        let fg = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("tab-drag")));
+        match self.tab_target(side, pos) {
+            Some(target) => {
+                match target {
+                    TabTarget::Strip(to, at) => {
+                        // Insertion marker between tabs.
+                        let rs = &self.tab_layout.rects[to];
+                        let zone = self.tab_layout.zones[to].unwrap_or(egui::Rect::NOTHING);
+                        let edge = |r: &egui::Rect, after: bool| if self.tabs_vertical {
+                            if after { r.bottom() + 1.0 } else { r.top() - 1.0 }
+                        } else if after {
+                            r.right() + 1.0
+                        } else {
+                            r.left() - 1.0
+                        };
+                        let (v, span) = match (rs.get(at), at.checked_sub(1).and_then(|k| rs.get(k))) {
+                            (Some(r), _) => (edge(r, false), *r),
+                            (None, Some(r)) => (edge(r, true), *r),
+                            (None, None) => (if self.tabs_vertical { zone.top() + 2.0 } else { zone.left() + 2.0 }, zone),
+                        };
+                        let line = if self.tabs_vertical {
+                            egui::Rect::from_min_max(egui::pos2(span.left(), v - 1.0), egui::pos2(span.right(), v + 1.0))
+                        } else {
+                            egui::Rect::from_min_max(egui::pos2(v - 1.0, span.top() + 4.0), egui::pos2(v + 1.0, span.bottom() - 4.0))
+                        };
+                        fg.rect_filled(line, 1.0, pal.accent);
+                    }
+                    TabTarget::Pane(to) => {
+                        if let Some(r) = self.tab_layout.panes[to] {
+                            fg.rect(r.shrink(1.0), 8.0, pal.accent.gamma_multiply(0.08), egui::Stroke::new(2.0, pal.accent), egui::StrokeKind::Inside);
+                        }
+                    }
+                }
+                // A small copy of the tab follows the pointer.
+                let title = self.tab_title(side, i);
+                let galley = ctx.fonts_mut(|f| f.layout_no_wrap(title, egui::FontId::proportional(13.0), pal.strong));
+                let size = egui::vec2(galley.size().x.min(220.0) + 20.0, 26.0);
+                let r = egui::Rect::from_min_size(pos + egui::vec2(12.0, 10.0), size);
+                fg.rect(r, 6.0, pal.surface, egui::Stroke::new(1.0, pal.accent), egui::StrokeKind::Inside);
+                fg.with_clip_rect(r.shrink(4.0)).galley(egui::pos2(r.left() + 10.0, r.center().y - galley.size().y / 2.0), galley, pal.strong);
+            }
+            None => {
+                // Within its own strip: move the tab once the pointer passes a neighbour's middle.
+                let own = self.tab_layout.zones[side].is_some_and(|z| z.expand(4.0).contains(pos));
+                if !own {
+                    return;
+                }
+                let vertical = self.tabs_vertical;
+                let along = |p: egui::Pos2| if vertical { p.y } else { p.x };
+                let mut to = i;
+                for (j, r) in self.tab_layout.rects[side].iter().enumerate() {
+                    if (j > i && along(pos) > along(r.center())) || (j < i && along(pos) < along(r.center()) && to == i) {
+                        to = j;
+                    }
+                }
+                if to != i {
+                    self.move_tab(side, i, to);
+                }
+            }
+        }
     }
 
     /// View switches, right-aligned: list/gallery, single/dual pane, tab strip position.
@@ -675,7 +882,7 @@ impl App {
             Action::NewFolder(p) => {
                 self.dialog = Some(Dialog::NewFolder { pane: p, name: "新しいフォルダー".into(), focus: true });
             }
-            Action::OpenInNewTab(path) => self.new_tab(path),
+            Action::OpenInNewTab(path) => self.new_tab(self.active, path),
             // Needs the window; handled in `ui` (start_drag_out).
             Action::DragOut(_) => {}
             Action::ToggleFavorite(path) => {
@@ -755,23 +962,25 @@ impl App {
                 self.add_favorite(p);
             }
         }
+        let a = self.active;
         if t_new {
-            let p = self.panes[self.active].path.clone();
-            self.new_tab(p);
+            let p = self.panes[a].path.clone();
+            self.new_tab(a, p);
         }
         if t_close {
-            self.close_tab(self.cur);
+            self.close_tab(a, self.cols[a].cur);
         }
-        let n = self.tabs.len();
+        let n = self.cols[a].tabs.len();
+        let cur = self.cols[a].cur;
         if t_next {
-            self.switch_tab((self.cur + 1) % n);
+            self.switch_tab(a, (cur + 1) % n);
         }
         if t_prev {
-            self.switch_tab((self.cur + n - 1) % n);
+            self.switch_tab(a, (cur + n - 1) % n);
         }
         if let Some(j) = t_jump {
             // ⌘9 is always the last tab, as in browsers.
-            self.switch_tab(if j == 8 { n - 1 } else { j });
+            self.switch_tab(a, if j == 8 { n - 1 } else { j });
         }
 
         let (tab, toggle_dual, hidden, palette, search, help) = ctx.input_mut(|i| {
@@ -1154,27 +1363,59 @@ impl eframe::App for App {
             .show_separator_line(false)
             .show(ui, |ui| self.sidebar(ui, &mut actions));
 
+        self.tab_layout = TabLayout::default();
         if self.tabs_vertical {
             egui::Panel::left("vtabs").default_size(180.0).frame(side_frame).show_separator_line(false).show(ui, |ui| {
-                section(ui, "TABS");
-                egui::ScrollArea::vertical().id_salt("vtabs-scroll").show(ui, |ui| self.tab_bar(ui, true));
+                egui::ScrollArea::vertical().id_salt("vtabs-scroll").show(ui, |ui| {
+                    let sides = if self.dual { 2 } else { 1 };
+                    for side in 0..sides {
+                        let title = match (self.dual, self.split_stacked, side) {
+                            (false, ..) => "TABS",
+                            (true, false, 0) => "LEFT",
+                            (true, false, _) => "RIGHT",
+                            (true, true, 0) => "TOP",
+                            (true, true, _) => "BOTTOM",
+                        };
+                        let r = ui.scope(|ui| {
+                            section(ui, title);
+                            self.tab_bar(ui, side, true);
+                        });
+                        let z = r.response.rect;
+                        self.tab_layout.zones[side] = Some(egui::Rect::from_min_max(z.min, egui::pos2(ui.max_rect().right(), z.max.y)));
+                    }
+                });
             });
         }
 
         let central = egui::Frame::new().fill(pal.bg).inner_margin(egui::Margin { left: 10, right: 10, top: 8, bottom: 4 });
         egui::CentralPanel::default().frame(central).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let icons_w = 210.0;
-                if !self.tabs_vertical {
-                    let w = (ui.available_width() - icons_w).max(80.0);
-                    egui::ScrollArea::horizontal()
-                        .id_salt("tabs-scroll")
-                        .max_width(w)
-                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                        .show(ui, |ui| ui.horizontal(|ui| self.tab_bar(ui, false)));
+            // Header row: tab strip(s) and the view switches on the right. In the side-by-side
+            // dual view each column's tabs sit above that column; in the top/bottom view the
+            // bottom pane's tabs sit just above it.
+            let icons_w = 210.0;
+            let row_h = 28.0;
+            let avail = ui.available_rect_before_wrap();
+            let row = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), row_h));
+            let gap = ui.spacing().item_spacing.x;
+            let col_w = (avail.width() - gap) / 2.0;
+            let icons = egui::Rect::from_min_max(egui::pos2(row.right() - icons_w, row.top()), row.max);
+            if !self.tabs_vertical {
+                let strip_end = (row.right() - icons_w).max(row.left() + 80.0);
+                if self.dual && !self.split_stacked {
+                    let left = egui::Rect::from_min_max(row.min, egui::pos2((row.left() + col_w).min(strip_end), row.bottom()));
+                    let right_l = row.left() + col_w + gap;
+                    let right = egui::Rect::from_min_max(egui::pos2(right_l, row.top()), egui::pos2(strip_end.max(right_l + 40.0), row.bottom()));
+                    self.tab_strip_h(ui, left, 0);
+                    self.tab_strip_h(ui, right, 1);
+                } else {
+                    let r = egui::Rect::from_min_max(row.min, egui::pos2(strip_end, row.bottom()));
+                    self.tab_strip_h(ui, r, 0);
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.view_icons(ui));
+            }
+            ui.scope_builder(egui::UiBuilder::new().max_rect(icons).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+                self.view_icons(ui)
             });
+            ui.advance_cursor_after_rect(row);
             ui.add_space(4.0);
             let sh = self.show_hidden;
             if self.dual && self.split_stacked {
@@ -1183,7 +1424,13 @@ impl eframe::App for App {
                 let h = ((avail.height() - gap) / 2.0).max(60.0);
                 for i in 0..2 {
                     let top = avail.top() + i as f32 * (h + gap);
-                    let rect = egui::Rect::from_min_size(egui::pos2(avail.left(), top), egui::vec2(avail.width(), h));
+                    let mut rect = egui::Rect::from_min_size(egui::pos2(avail.left(), top), egui::vec2(avail.width(), h));
+                    if i == 1 && !self.tabs_vertical {
+                        let strip = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), row_h));
+                        self.tab_strip_h(ui, strip, 1);
+                        rect.min.y += row_h + 4.0;
+                    }
+                    self.tab_layout.panes[i] = Some(rect);
                     let active = self.active == i;
                     ui.scope_builder(egui::UiBuilder::new().max_rect(rect).id_salt(("stacked", i)), |ui| {
                         ui.set_clip_rect(rect.expand(1.0));
@@ -1194,6 +1441,7 @@ impl eframe::App for App {
                 ui.columns(2, |cols| {
                     for (i, col) in cols.iter_mut().enumerate() {
                         let active = self.active == i;
+                        self.tab_layout.panes[i] = Some(col.max_rect());
                         pane_frame(col, active, |ui| self.panes[i].ui(ui, i, active, sh, &mut self.thumbs, &mut actions));
                     }
                 });
@@ -1201,6 +1449,7 @@ impl eframe::App for App {
                 self.panes[0].ui(ui, 0, true, sh, &mut self.thumbs, &mut actions);
             }
         });
+        self.tab_drag(ui);
 
         self.dialogs(&ctx);
         for a in actions {
@@ -1234,6 +1483,13 @@ enum Icon {
     DualStacked,
     /// Tab strip position; `true` = currently on the left.
     TabsSide(bool),
+}
+
+/// Stop a closed tab's background search.
+fn cancel_search(mut pane: Pane) {
+    if let Some(s) = pane.search.take() {
+        s.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 /// A small painted toolbar button. Returns true when clicked.

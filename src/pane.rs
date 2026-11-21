@@ -394,7 +394,7 @@ impl Pane {
             self.per_row = ((ui.available_width() - 14.0) / TILE_W).floor().max(1.0) as usize;
         } else {
             self.per_row = 1;
-            self.columns_ui(ui, show_hidden);
+            self.columns_ui(ui, id, show_hidden);
         }
 
         if let Some(err) = &self.error {
@@ -624,7 +624,7 @@ impl Pane {
         });
     }
 
-    fn columns_ui(&mut self, ui: &mut egui::Ui, show_hidden: bool) {
+    fn columns_ui(&mut self, ui: &mut egui::Ui, id: usize, show_hidden: bool) {
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
         let mut colw = load_colw(ui.ctx());
         let cols = Columns::new(rect, self.search.is_some(), &colw);
@@ -634,7 +634,7 @@ impl Pane {
             Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
         );
         let mut hdr = |r: Rect, label: &str, key: Option<SortKey>, right: bool| {
-            let resp = ui.interact(r, ui.scope_id().with(label), Sense::click());
+            let resp = ui.interact(r, ui.scope_id().with((label, id)), Sense::click());
             let mut text = label.to_string();
             if key == Some(self.sort) {
                 text.push_str(if self.asc { " ▲" } else { " ▼" });
@@ -677,7 +677,7 @@ impl Pane {
         for (key, r) in edges {
             let x = r.right();
             let hit = Rect::from_min_max(pos2(x - 4.0, rect.top()), pos2(x + 4.0, rect.bottom()));
-            let resp = ui.interact(hit, ui.scope_id().with(("col-edge", key)), Sense::click_and_drag());
+            let resp = ui.interact(hit, ui.scope_id().with(("col-edge", key, id)), Sense::click_and_drag());
             let hot = resp.hovered() || resp.dragged();
             if hot {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);

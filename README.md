@@ -6,6 +6,7 @@ A fast, keyboard-driven file manager for Windows and macOS, written in Rust, wit
 
 - Instant folder listing on a background thread; virtualised list that only draws visible rows, so folders with 100k+ files stay smooth.
 - Tabs (`Ctrl+T` / `Ctrl+W`, `Ctrl+Tab`, `Ctrl+1…9`, middle-click or `Ctrl+Enter` a folder to open it in a new tab). Drag tabs to reorder; show the tab strip on top or down the left side.
+- In dual pane each pane has its own tabs. Drag a tab onto the other pane's tab strip, or onto the pane itself, to show it there (the tab keys act on the active pane).
 - Single or dual pane, side by side or top/bottom, switched from the toolbar icons (`Ctrl+\` toggles; Tab switches pane).
 - List or gallery view (`Ctrl+G`) with image thumbnails (PNG, JPEG, GIF, BMP, WebP, ICO, TIFF) decoded in the background.
 - Dark and light themes that follow the system setting (`THEME_8823=light|dark` forces one).
