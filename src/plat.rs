@@ -160,3 +160,66 @@ pub fn terminal(dir: &Path) {
         let _ = std::process::Command::new("x-terminal-emulator").current_dir(dir).spawn();
     }
 }
+
+/// Startup background for the native window, so Windows never shows white.
+///
+/// winit registers its window class without a background brush. Until the first
+/// OpenGL frame actually reaches the screen (and when the window is resized for the
+/// display scale while it opens), Windows shows those not-yet-drawn areas as white,
+/// which flashes on a dark UI. While this is active the class brush is the app's
+/// background colour, so those areas are filled with it instead.
+///
+/// Windows also erases with that brush after a frame has been drawn, so it is only
+/// kept for the first moments, with frames requested continuously until it is removed
+/// (see `App::ui`). Elsewhere this does nothing.
+pub struct StartupBackground {
+    #[cfg(windows)]
+    win: Option<(isize, isize)>, // (HWND, HBRUSH)
+}
+
+impl StartupBackground {
+    #[cfg(windows)]
+    pub fn install(cc: &eframe::CreationContext<'_>, c: eframe::egui::Color32) -> Self {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows_sys::Win32::Graphics::Gdi::CreateSolidBrush;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GCLP_HBRBACKGROUND, SetClassLongPtrW};
+        let hwnd = match cc.window_handle().map(|h| h.as_raw()) {
+            Ok(RawWindowHandle::Win32(w)) => w.hwnd.get(),
+            _ => return Self { win: None },
+        };
+        let colorref = c.r() as u32 | (c.g() as u32) << 8 | (c.b() as u32) << 16;
+        // SAFETY: plain Win32 calls on the live window eframe just created.
+        let brush = unsafe { CreateSolidBrush(colorref) };
+        if brush.is_null() {
+            return Self { win: None };
+        }
+        unsafe { SetClassLongPtrW(hwnd as _, GCLP_HBRBACKGROUND, brush as isize) };
+        Self { win: Some((hwnd, brush as isize)) }
+    }
+
+    #[cfg(not(windows))]
+    pub fn install(_cc: &eframe::CreationContext<'_>, _c: eframe::egui::Color32) -> Self {
+        Self {}
+    }
+
+    pub fn active(&self) -> bool {
+        #[cfg(windows)]
+        return self.win.is_some();
+        #[cfg(not(windows))]
+        false
+    }
+
+    /// Back to winit's default (no background brush).
+    pub fn remove(&mut self) {
+        #[cfg(windows)]
+        if let Some((hwnd, brush)) = self.win.take() {
+            use windows_sys::Win32::Graphics::Gdi::DeleteObject;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{GCLP_HBRBACKGROUND, SetClassLongPtrW};
+            // SAFETY: the brush is ours and no longer referenced by the class once replaced.
+            unsafe {
+                SetClassLongPtrW(hwnd as _, GCLP_HBRBACKGROUND, 0);
+                DeleteObject(brush as _);
+            }
+        }
+    }
+}
