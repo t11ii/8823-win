@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod fonts;
 mod fsx;
+mod pace;
 mod pane;
 mod plat;
 mod text;
@@ -29,35 +30,20 @@ fn main() -> eframe::Result {
         .with_min_inner_size([520.0, 320.0])
         .with_drag_and_drop(true);
     viewport.icon = app_icon();
-    let options = eframe::NativeOptions {
+    #[allow(unused_mut)]
+    let mut options = eframe::NativeOptions {
         viewport,
         ..Default::default()
     };
-    run(options)
-}
-
-#[cfg(not(windows))]
-fn run(options: eframe::NativeOptions) -> eframe::Result {
-    eframe::run_native("8823", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
-}
-
-/// Windows: draw with Direct3D 12, and fall back to OpenGL if it can't start (very old GPU,
-/// remote desktop without a GPU…). `RENDERER_8823=gl` forces OpenGL.
-#[cfg(windows)]
-fn run(options: eframe::NativeOptions) -> eframe::Result {
-    use eframe::Renderer;
-    let force_gl = std::env::var("RENDERER_8823").is_ok_and(|v| v.eq_ignore_ascii_case("gl"));
-    if !force_gl {
-        let mut o = options.clone();
-        o.renderer = Renderer::Wgpu;
-        match eframe::run_native("8823", o, Box::new(|cc| Ok(Box::new(app::App::new(cc))))) {
-            Err(eframe::Error::Wgpu(_)) => {} // try OpenGL below
-            other => return other,
-        }
+    // Windows: don't block in SwapBuffers until vsync. With vsync every frame stalled the UI
+    // thread for one refresh period (31 ms on a 32 Hz Remote Desktop display), so scrolling
+    // and key repeat crawled. Windowed GL output is composited by DWM, so this does not tear.
+    // The frame rate is capped in `pace.rs` instead.
+    #[cfg(windows)]
+    {
+        options.glow_options.vsync = false;
     }
-    let mut o = options;
-    o.renderer = Renderer::Glow;
-    eframe::run_native("8823", o, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
+    eframe::run_native("8823", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
 }
 
 #[cfg(test)]

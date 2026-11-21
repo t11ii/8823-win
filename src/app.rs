@@ -63,6 +63,8 @@ pub struct App {
     fav_dirty: bool,
     drives: Vec<PathBuf>,
     font: Option<String>,
+    /// Frame-rate cap on Windows, where vsync is off (see `pace.rs`).
+    pacer: crate::pace::Pacer,
 }
 
 impl App {
@@ -100,6 +102,7 @@ impl App {
             fav_dirty: false,
             drives: fsx::drives(),
             font,
+            pacer: crate::pace::Pacer::new(),
         };
         if app.font.is_none() {
             app.status = "No Japanese font found; set FONT_8823 to a .ttf/.ttc path".into();
@@ -1057,6 +1060,7 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.pacer.frame_start();
         let ctx = ui.ctx().clone();
         self.poll();
         self.thumbs.poll(&ctx);
@@ -1156,6 +1160,7 @@ impl eframe::App for App {
         for a in actions {
             self.apply(a);
         }
+        self.pacer.frame_end();
     }
 }
 
