@@ -61,7 +61,7 @@ The app is built for Apple Silicon only, which keeps it half the size of a unive
 
 The app is ad-hoc signed, not notarized. On first launch, right-click 8823.app → Open (or run `xattr -dr com.apple.quarantine 8823.app`).
 
-GitHub Actions (`.github/workflows/build.yml`) builds `8823.exe` and `8823-mac.zip` on every push and attaches both to releases for `v*` tags.
+GitHub Actions (`.github/workflows/build.yml`) builds `8823-win.zip` (containing `8823.exe`) and `8823-mac.zip` on every push and attaches both to releases for `v*` tags.
 
 ## macOS differences
 

@@ -22,7 +22,7 @@ egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 winresource = { version = "0.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # Already pulled in by eframe; used to reach the native window (startup background, plat.rs).
 raw-window-handle = "0.6"
 
