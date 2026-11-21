@@ -64,6 +64,8 @@ pub struct App {
     drives: Vec<PathBuf>,
     font: Option<String>,
     startup_bg: crate::plat::StartupBackground,
+    /// Frame-rate cap on Windows, where vsync is off (see `pace.rs`).
+    pacer: crate::pace::Pacer,
 }
 
 impl App {
@@ -104,6 +106,7 @@ impl App {
             drives: fsx::drives(),
             font,
             startup_bg,
+            pacer: crate::pace::Pacer::new(),
         };
         if app.font.is_none() {
             app.status = "No Japanese font found; set FONT_8823 to a .ttf/.ttc path".into();
@@ -162,7 +165,8 @@ impl App {
         pane.req = req;
         pane.loading = true;
         let path = pane.path.clone();
-        fsx::spawn_listing(self.bg(), p, req, path);
+        let (sort, asc) = (pane.sort, pane.asc);
+        fsx::spawn_listing(self.bg(), p, req, path, sort, asc);
     }
 
     fn navigate(&mut self, p: usize, path: PathBuf, record: bool) {
@@ -450,7 +454,7 @@ impl App {
     fn poll(&mut self) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                Msg::Listing { pane, req, path, result } => {
+                Msg::Listing { pane, req, path, sorted, result } => {
                     let sh = self.show_hidden;
                     let Some(p) = self.pane_for(pane, req) else { continue };
                     if p.path != path {
@@ -460,11 +464,11 @@ impl App {
                     match result {
                         Ok(entries) => {
                             p.error = None;
-                            p.set_entries(entries, sh);
+                            p.set_entries(entries, sorted, sh);
                         }
                         Err(e) => {
                             p.error = Some(e);
-                            p.set_entries(Vec::new(), sh);
+                            p.set_entries(Vec::new(), sorted, sh);
                         }
                     }
                 }
@@ -1063,6 +1067,7 @@ const STARTUP_BG_SECS: f64 = 0.6;
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.pacer.frame_start();
         let ctx = ui.ctx().clone();
         self.poll();
         self.thumbs.poll(&ctx);
@@ -1172,6 +1177,7 @@ impl eframe::App for App {
         for a in actions {
             self.apply(a);
         }
+        self.pacer.frame_end();
     }
 }
 
