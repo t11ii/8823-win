@@ -1,9 +1,16 @@
-//! Thumbnail decoding. Windows and macOS use the OS image codecs (WIC, ImageIO), which
-//! keeps the JPEG, WebP, GIF, TIFF... decoders out of the binary (about 0.9 MB) and lets
-//! the OS decode JPEGs at reduced size. Other platforms use the `image` crate.
+//! Thumbnail decoding: each format goes to whichever decoder is faster on that OS
+//! (measured with `bench_thumbs` on the GitHub Windows and macOS runners, 2026-11-22).
 //!
-//! The `rust-decoders` feature also builds the `image` crate path on Windows/macOS, for
-//! the speed comparison in the tests (`bench_thumbs`).
+//! - JPEG and BMP: the OS codecs (WIC on Windows, ImageIO on macOS), 2-5x faster than the
+//!   `image` crate because they decode JPEGs at reduced size. GIF and ICO too on Windows.
+//! - PNG, WebP, TIFF (and GIF on macOS): the `image` crate, which is as fast or faster
+//!   there. Its PNG decoder is in the binary anyway for the window icon.
+//!
+//! Leaving the JPEG, GIF, BMP and ICO decoders out of the `image` crate on Windows and
+//! macOS keeps the binary smaller. If the preferred decoder can't read a file (say a
+//! JPEG named .png), the other one gets a try. Other platforms use only the `image` crate.
+//!
+//! The `rust-decoders` feature builds every `image` crate decoder, for `bench_thumbs`.
 
 #[cfg(target_os = "macos")]
 mod imageio;
@@ -15,17 +22,40 @@ use std::path::Path;
 
 /// A thumbnail at most `max` pixels on the long side (never enlarged).
 pub fn thumbnail(path: &Path, max: u32) -> Option<ColorImage> {
-    #[cfg(windows)]
-    return wic::thumbnail(path, max);
-    #[cfg(target_os = "macos")]
-    return imageio::thumbnail(path, max);
-    #[cfg(not(any(windows, target_os = "macos")))]
-    return thumbnail_rust(path, max);
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if rust_first(&ext) {
+        thumbnail_rust(path, max).or_else(|| thumbnail_os(path, max))
+    } else {
+        thumbnail_os(path, max).or_else(|| thumbnail_rust(path, max))
+    }
 }
 
-/// Decodes with the `image` crate.
-#[cfg(any(feature = "rust-decoders", not(any(windows, target_os = "macos"))))]
-pub fn thumbnail_rust(path: &Path, max: u32) -> Option<ColorImage> {
+/// Formats the `image` crate decodes faster than the OS (see the module docs).
+fn rust_first(ext: &str) -> bool {
+    if cfg!(windows) {
+        matches!(ext, "png" | "webp" | "tif" | "tiff")
+    } else if cfg!(target_os = "macos") {
+        matches!(ext, "png" | "webp" | "tif" | "tiff" | "gif")
+    } else {
+        true
+    }
+}
+
+#[cfg(windows)]
+fn thumbnail_os(path: &Path, max: u32) -> Option<ColorImage> {
+    wic::thumbnail(path, max)
+}
+#[cfg(target_os = "macos")]
+fn thumbnail_os(path: &Path, max: u32) -> Option<ColorImage> {
+    imageio::thumbnail(path, max)
+}
+#[cfg(not(any(windows, target_os = "macos")))]
+fn thumbnail_os(_path: &Path, _max: u32) -> Option<ColorImage> {
+    None
+}
+
+/// Decodes with the `image` crate (only the formats built into it on this platform).
+fn thumbnail_rust(path: &Path, max: u32) -> Option<ColorImage> {
     let img = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
     let t = img.thumbnail(max, max).to_rgba8();
     let size = [t.width() as usize, t.height() as usize];
@@ -64,14 +94,14 @@ mod tests {
         let dir = std::env::temp_dir().join("8823-bench-thumbs");
         std::fs::create_dir_all(&dir).unwrap();
         let files = sample_files(&dir);
-        println!("{:<22} {:>9} {:>10} {:>10} {:>7}", "file", "size KB", "image ms", "OS ms", "ratio");
-        let (mut tr, mut to) = (0.0, 0.0);
+        println!("{:<24} {:>8} {:>9} {:>9} {:>9}", "file", "size KB", "image ms", "OS ms", "8823 ms");
+        let (mut tr, mut to, mut tc) = (0.0, 0.0, 0.0);
         for path in &files {
             let kb = std::fs::metadata(path).unwrap().len() / 1024;
             let name = path.file_name().unwrap().to_string_lossy();
             let r = thumbnail_rust(path, 256).expect("image crate decode");
-            let Some(o) = thumbnail(path, 256) else {
-                println!("{name:<22} {kb:>9}  OS decoder cannot read this file (codec not installed?)");
+            let Some(o) = thumbnail_os(path, 256) else {
+                println!("{name:<24} {kb:>8}  OS decoder cannot read this file (codec not installed?)");
                 continue;
             };
             assert_eq!(r.size, o.size, "{}", path.display());
@@ -89,12 +119,14 @@ mod tests {
                 v[4]
             };
             let ms_r = time(&|| thumbnail_rust(path, 256));
-            let ms_o = time(&|| thumbnail(path, 256));
+            let ms_o = time(&|| thumbnail_os(path, 256));
+            let ms_c = time(&|| thumbnail(path, 256));
             tr += ms_r;
             to += ms_o;
-            println!("{name:<22} {kb:>9} {ms_r:>10.2} {ms_o:>10.2} {:>6.2}x", ms_r / ms_o);
+            tc += ms_c;
+            println!("{name:<24} {kb:>8} {ms_r:>9.2} {ms_o:>9.2} {ms_c:>9.2}");
         }
-        println!("{:<22} {:>9} {tr:>10.2} {to:>10.2} {:>6.2}x", "total", "", tr / to);
+        println!("{:<24} {:>8} {tr:>9.2} {to:>9.2} {tc:>9.2}", "total", "");
     }
 
     #[cfg(feature = "rust-decoders")]
