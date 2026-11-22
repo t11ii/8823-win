@@ -16,6 +16,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --release
+      - name: Thumbnail speed (temporary)
+        run: cargo test --release --features rust-decoders -- --ignored bench_thumbs --nocapture
       - name: Build
         run: cargo build --release
       - name: Report size
@@ -47,6 +49,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --release
+      - name: Thumbnail speed (temporary)
+        run: cargo test --release --features rust-decoders -- --ignored bench_thumbs --nocapture
       - name: Build .app (Apple Silicon)
         run: ./scripts/bundle-mac.sh
       - name: Report size

@@ -15,11 +15,21 @@ unicode-normalization = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 trash = "5"
 open = "5"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico", "tiff"] }
+# PNG only (the window icon). Thumbnails use the OS codecs on Windows and macOS (src/osimg).
+image = { version = "0.25", default-features = false, features = ["png"] }
 # No egui default fonts: they would link Hack and Ubuntu-Light (0.6 MB) that 8823 Gothic
 # already covers. The emoji fonts we keep are bundled in assets/fonts/egui (src/fonts.rs).
 egui = { version = "0.37", default-features = false }
 raw-window-handle = "0.6"
+
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+# Other platforms decode thumbnails with the image crate.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico", "tiff"] }
+
+[features]
+# Also build the image-crate thumbnail decoder on Windows/macOS, to compare speeds
+# (cargo test --release --features rust-decoders -- --ignored bench_thumbs --nocapture).
+rust-decoders = ["image/jpeg", "image/gif", "image/bmp", "image/webp", "image/ico", "image/tiff"]
 
 [build-dependencies]
 winresource = { version = "0.1", default-features = false }

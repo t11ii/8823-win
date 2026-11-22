@@ -5,6 +5,7 @@ mod config;
 mod dragout;
 mod fonts;
 mod fsx;
+mod osimg;
 mod pace;
 mod pane;
 mod plat;
