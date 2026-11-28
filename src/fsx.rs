@@ -185,6 +185,7 @@ pub enum Msg {
     Listing { pane: usize, req: u64, path: PathBuf, sorted: (SortKey, bool), result: Result<Vec<Entry>, String> },
     SearchBatch { pane: usize, req: u64, items: Vec<Entry>, scanned: usize },
     SearchDone { pane: usize, req: u64, scanned: usize },
+    PreviewReady { req: u64, result: crate::preview::LoadResult },
     OpProgress(String),
     OpDone { summary: String, errors: Vec<String> },
 }
@@ -437,12 +438,12 @@ fn standard_folder(_label: &str) -> Option<PathBuf> {
     None
 }
 
-pub fn quick_access() -> Vec<(String, PathBuf)> {
+pub fn quick_access(folders: &[(&str, PathBuf, PathBuf)]) -> Vec<(String, PathBuf)> {
     let home = home_dir();
     let mut v = vec![("Home".to_string(), home.clone())];
-    for (label, p, _) in standard_folders() {
+    for (label, p, _) in folders {
         if p.is_dir() {
-            v.push((label.to_string(), p));
+            v.push((label.to_string(), p.clone()));
         }
     }
     #[cfg(target_os = "macos")]

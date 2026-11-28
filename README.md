@@ -10,12 +10,13 @@ A fast, keyboard-driven file manager for Windows and macOS, written in Rust, wit
 - In dual-pane view, each pane has its own tab strip. Tab shortcuts act on the focused pane. Drag a tab onto the other pane's tab strip, or onto the pane itself, to move it there.
 - Change the display scale from the percentage in the status bar. Use `Ctrl+-` to fit more items on screen and `Ctrl+0` to reset. The scale is saved between launches.
 - List or gallery view (`Ctrl+G`) with image thumbnails (PNG, JPEG, GIF, BMP, WebP, ICO, TIFF) decoded in the background.
+- File preview (`Ctrl+I` or the file's context menu) for images, UTF-8 and BOM-marked UTF-16 text, and the first page of a PDF. Previews load on demand in the background. Text shows up to 64 KiB, and images and PDFs up to 80 MiB are rendered at up to 1280 pixels on the long side.
 - Dark and light themes that follow the system setting (`THEME_8823=light|dark` forces one).
 - Type to filter: just start typing in the list (Japanese IME included); ↑↓ pick, Enter opens, Esc clears. Can be turned off in the status bar.
 - Resizable columns: drag a header border; double-click a border to reset.
 - Filter as you type (`Ctrl+F`) and recursive search (`Ctrl+Shift+F`) that streams results while it scans.
 - Japanese-aware matching and sorting: full-width/half-width, hiragana/katakana and case are treated as equal, so `てすと` finds `テスト.txt` and `ﾃｽﾄ.txt`. Numbers sort naturally (`file2` before `file10`, `画像２` before `画像10`).
-- Bundled UI font **8823 Gothic**: JetBrains Mono (Latin) and BIZ UDゴシック (Japanese) merged into one font, so mixed Japanese/English names share one baseline. Built by `tools/build_font.py`; both are SIL OFL 1.1 (`assets/fonts/OFL.txt`). The system Japanese font (Yu Gothic UI / Hiragino) stays as a fallback; override with the `FONT_8823` environment variable.
+- Bundled UI font **8823 Gothic**: JetBrains Mono (Latin) and BIZ UDゴシック (Japanese) share one baseline. A full-width Japanese character uses two half-width cells, so mixed names stay aligned. Both fonts use SIL OFL 1.1 (`assets/fonts/OFL.txt`) and are merged by `tools/build_font.py`. The system Japanese font (Yu Gothic UI / Hiragino) serves as a fallback. To choose another font, set `FONT_8823`.
 - macOS file names stored in decomposed form (NFD, e.g. ガ as カ + ゛) are shown composed, and match searches typed in normal (NFC) form.
 - IME input (日本語入力) works in every text field: rename, filter, search, path bar.
 - Copy / cut / paste, rename in place (F2), new folder, Recycle Bin delete, permanent delete with confirmation, drag files in from Explorer.
@@ -75,6 +76,7 @@ Choose **Restore previous setting** in the same dialog to restore the prior sett
 ## macOS differences
 
 - Shortcuts use ⌘ wherever Windows uses Ctrl, plus Finder conventions: ⌘⌫ Trash, ⌥⌘⌫ delete permanently, ⌘↑ parent, ⌘↓ / ⌘O open, ⌘[ ⌘] back/forward, ⇧⌘G go to folder, ⇧⌘. hidden files, ⌥⌘C copy path.
+- Both Ctrl+I and ⌘I toggle file preview.
 - Sidebar lists `/Volumes` (external disks, DMGs, network shares), iCloud Drive and `~/Library/CloudStorage` (Dropbox, Google Drive, OneDrive…).
 - Files flagged hidden with `chflags hidden` are treated as hidden, like dotfiles.
 
@@ -84,6 +86,7 @@ Choose **Restore previous setting** in the same dialog to restore the prior sett
 |---|---|
 | ↑ ↓ PgUp PgDn Home End | Move (Shift extends selection) |
 | Enter | Open |
+| Ctrl+I / Esc | Toggle file preview / close preview |
 | Backspace, Alt+↑ | Parent folder |
 | Alt+← / Alt+→ | Back / forward |
 | Space / Ctrl+A | Toggle / select all |

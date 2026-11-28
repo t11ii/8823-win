@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-pub const ROW_H: f32 = 26.0;
-const TILE_W: f32 = 132.0;
-const TILE_H: f32 = 156.0;
+pub const ROW_H: f32 = 22.0;
+const TILE_W: f32 = 112.0;
+const TILE_H: f32 = 132.0;
 
 pub struct SearchState {
     pub query: String,
@@ -66,6 +66,7 @@ pub enum Action {
     Activate(usize),
     Navigate(usize, PathBuf),
     OpenCursor(usize),
+    Preview(PathBuf),
     Up(usize),
     Back(usize),
     Forward(usize),
@@ -143,6 +144,12 @@ impl Pane {
 
     pub fn cursor_entry(&self) -> Option<&Entry> {
         self.view.get(self.cursor).map(|&i| &self.entries[i])
+    }
+
+    fn preview_cursor(&self, out: &mut Vec<Action>) {
+        if let Some(entry) = self.cursor_entry().filter(|entry| !entry.is_dir) {
+            out.push(Action::Preview(entry.path.clone()));
+        }
     }
 
     /// Selected entries, or the entry under the cursor when nothing is selected.
@@ -273,11 +280,12 @@ impl Pane {
         if type_to_filter {
             self.type_to_filter(ctx);
         }
-        let (ev, m) = ctx.input(|i| {
-            let mut keys: Vec<Key> = Vec::new();
+        let ev = ctx.input(|i| {
+            let mut keys = Vec::new();
             for e in &i.events {
                 match e {
-                    egui::Event::Key { key, pressed: true, .. } => keys.push(*key),
+                    egui::Event::Key { key, pressed: true, repeat, modifiers, .. } =>
+                        keys.push((*key, *repeat, *modifiers)),
                     // egui-winit turns ⌘/Ctrl+C/X/V (and Shift+Del, Ctrl/Shift+Ins on Windows)
                     // into clipboard events instead of key events.
                     egui::Event::Copy => out.push(Action::Copy(id)),
@@ -287,11 +295,11 @@ impl Pane {
                     _ => {}
                 }
             }
-            (keys, i.modifiers)
+            keys
         });
-        let c = self.cursor as isize;
         let pr = self.per_row.max(1) as isize;
-        for k in ev {
+        for (k, repeat, m) in ev {
+            let c = self.cursor as isize;
             // macOS Finder conventions, checked first so they win over the generic bindings.
             #[cfg(target_os = "macos")]
             {
@@ -343,6 +351,7 @@ impl Pane {
                     }
                 }
                 Key::Enter => out.push(Action::OpenCursor(id)),
+                Key::I if !repeat && crate::preview::shortcut_modifiers(m) => self.preview_cursor(out),
                 Key::Backspace => out.push(Action::Up(id)),
                 Key::ArrowLeft if m.alt => out.push(Action::Back(id)),
                 Key::ArrowRight if m.alt => out.push(Action::Forward(id)),
@@ -557,7 +566,8 @@ impl Pane {
             }
 
             let fid = ui.make_persistent_id("filter");
-            // While typing in the filter: ↑/↓ move through the list, Enter opens, Esc clears.
+            // While typing in the filter: ↑/↓ move through the list, Enter opens,
+            // Ctrl+I previews the cursor, and Esc clears.
             if ui.memory(|m| m.has_focus(fid)) {
                 let (up, down) = ui.input_mut(|i| {
                     (i.consume_key(egui::Modifiers::NONE, Key::ArrowUp), i.consume_key(egui::Modifiers::NONE, Key::ArrowDown))
@@ -570,6 +580,7 @@ impl Pane {
                 }
             }
             let focused = ui.memory(|m| m.has_focus(fid));
+            let preview = focused && ui.input_mut(crate::preview::consume_shortcut);
             let (frect, _) = ui.allocate_exact_size(vec2(filter_w, bar_h), Sense::hover());
             ui.painter().rect_filled(frect, 6.0, pal.surface);
             if focused || !self.filter.is_empty() {
@@ -612,6 +623,9 @@ impl Pane {
                 self.cursor = 0;
                 self.scroll_to_cursor = true;
             }
+            if preview {
+                self.preview_cursor(out);
+            }
             if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                 out.push(Action::Activate(id));
                 out.push(Action::OpenCursor(id));
@@ -648,7 +662,7 @@ impl Pane {
             } else {
                 (pos2(r.left() + 6.0, r.center().y), Align2::LEFT_CENTER)
             };
-            ui.painter().text(pos, align, text, FontId::proportional(12.0), color);
+            ui.painter().text(pos, align, text, FontId::proportional(11.0), color);
             if let (true, Some(k)) = (resp.clicked(), key) {
                 if self.sort == k {
                     self.asc = !self.asc;
@@ -734,8 +748,8 @@ impl Pane {
 
         let e = &self.entries[ei];
         let cols = Columns::new(rect, self.search.is_some(), &load_colw(ui.ctx()));
-        let font = FontId::proportional(14.0);
-        let small = FontId::proportional(12.5);
+        let font = FontId::proportional(12.0);
+        let small = FontId::proportional(11.0);
         let text_c = if is_sel {
             pal.strong
         } else if e.hidden {
@@ -746,15 +760,16 @@ impl Pane {
         let weak = if is_sel && active { pal.text } else { pal.weak };
 
         let renaming = self.rename.as_ref().is_some_and(|r| r.path == e.path);
-        paint_icon(&painter, pos2(cols.name.left() + 10.0, rect.center().y), e.is_dir, &e.ext, pal);
+        let name_x = cols.name.left() + 28.0;
+        paint_icon(&painter, pos2(cols.name.left() + 8.0, rect.center().y), e.is_dir, &e.ext, pal);
         if !renaming {
             let clip = painter.with_clip_rect(cols.name.shrink2(vec2(4.0, 0.0)));
             let mut name = e.name.clone();
             if e.is_link {
                 name.push_str("  ↪");
             }
-            let g = theme::elided(ui, &name, font.clone(), text_c, cols.name.width() - 42.0);
-            theme::paint_left(&clip, g, pos2(cols.name.left() + 34.0, rect.center().y), text_c);
+            let g = theme::elided(ui, &name, font.clone(), text_c, cols.name.right() - 8.0 - name_x);
+            theme::paint_left(&clip, g, pos2(name_x, rect.center().y), text_c);
         }
         if let (Some(r), Some(rel)) = (cols.folder, &e.rel) {
             painter
@@ -784,9 +799,9 @@ impl Pane {
 
         if renaming {
             let r = self.rename.as_mut().unwrap();
-            let edit_rect = Rect::from_min_max(pos2(cols.name.left() + 30.0, rect.top() + 2.0), pos2(cols.name.right() - 4.0, rect.bottom() - 2.0));
+            let edit_rect = Rect::from_min_max(pos2(name_x - 2.0, rect.top() + 2.0), pos2(cols.name.right() - 4.0, rect.bottom() - 2.0));
             let rename_id = ui.make_persistent_id("rename");
-            let te = ui.put(edit_rect, egui::TextEdit::singleline(&mut r.text).id(rename_id).margin(Vec2::new(2.0, 1.0)));
+            let te = ui.put(edit_rect, egui::TextEdit::singleline(&mut r.text).id(rename_id).font(font).margin(Vec2::new(2.0, 1.0)));
             if r.focus {
                 te.request_focus();
                 // Pre-select the stem so typing replaces the name but keeps the extension.
@@ -871,6 +886,9 @@ impl Pane {
             if ui.button("Open\tEnter").clicked() {
                 out.push(Action::OpenCursor(id));
             }
+            if !is_dir && ui.button(format!("Preview\t{}", k("Ctrl+I"))).clicked() {
+                out.push(Action::Preview(path.clone()));
+            }
             if is_dir && ui.button(format!("Open in new tab\t{}", k("Ctrl+Enter"))).clicked() {
                 out.push(Action::OpenInNewTab(id, path.clone()));
             }
@@ -925,10 +943,11 @@ impl Pane {
         }
 
         let e = &self.entries[ei];
-        let img_area = Rect::from_min_max(inner.min + vec2(8.0, 8.0), pos2(inner.max.x - 8.0, inner.min.y + 104.0));
+        let name_rect = Rect::from_min_max(pos2(inner.left() + 4.0, inner.bottom() - 30.0), pos2(inner.right() - 4.0, inner.bottom() - 2.0));
+        let img_area = Rect::from_min_max(inner.min + vec2(8.0, 8.0), pos2(inner.right() - 8.0, name_rect.top() - 6.0));
         let mut drew = false;
         if !e.is_dir && crate::thumbs::is_image(&e.ext) {
-            if let Some(tex) = thumbs.get(&e.path) {
+            if let Some(tex) = thumbs.get(ui.ctx(), &e.path) {
                 let size = tex.size_vec2();
                 let scale = (img_area.width() / size.x).min(img_area.height() / size.y).min(1.0);
                 let r = Rect::from_center_size(img_area.center(), size * scale);
@@ -940,12 +959,12 @@ impl Pane {
         }
         if !drew {
             let c = img_area.center();
-            paint_icon_scaled(&painter, pos2(c.x - 8.0 * 3.2, c.y), e.is_dir, &e.ext, pal, 3.2);
+            let icon_scale = 2.6;
+            paint_icon_scaled(&painter, pos2(c.x - 8.0 * icon_scale, c.y), e.is_dir, &e.ext, pal, icon_scale);
         }
         let text_c = if is_sel { pal.strong } else if e.hidden { pal.weak } else { pal.text };
-        let name_rect = Rect::from_min_max(pos2(inner.left() + 4.0, inner.top() + 110.0), pos2(inner.right() - 4.0, inner.bottom() - 2.0));
         let galley = ui.fonts_mut(|f| {
-            let mut job = egui::text::LayoutJob::simple(e.name.clone(), FontId::proportional(12.5), text_c, name_rect.width());
+            let mut job = egui::text::LayoutJob::simple(e.name.clone(), FontId::proportional(11.5), text_c, name_rect.width());
             job.wrap.max_rows = 2;
             job.wrap.break_anywhere = true;
             job.halign = egui::Align::Center;
@@ -959,7 +978,7 @@ impl Pane {
 
 /// Small vector file icons: crisp at any DPI and no dependency on emoji fonts.
 fn paint_icon(p: &egui::Painter, left_center: egui::Pos2, is_dir: bool, ext: &str, pal: &theme::Pal) {
-    paint_icon_scaled(p, left_center, is_dir, ext, pal, 1.0);
+    paint_icon_scaled(p, left_center, is_dir, ext, pal, 0.8);
 }
 
 fn ext_color(ext: &str, pal: &theme::Pal) -> Color32 {
@@ -1079,7 +1098,7 @@ mod bench {
         let ctx = egui::Context::default();
         crate::fonts::install(&ctx);
         crate::theme::install(&ctx);
-        let mut thumbs = Thumbs::new(&ctx);
+        let mut thumbs = Thumbs::new();
         let mut pane = Pane::new(PathBuf::from("/x"));
         let unsorted = (SortKey::Size, false); // anything but the pane's own order
         pane.set_entries(entries(20_000), unsorted, false);

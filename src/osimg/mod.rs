@@ -15,10 +15,35 @@
 #[cfg(target_os = "macos")]
 mod imageio;
 #[cfg(windows)]
+mod pdf_win;
+#[cfg(windows)]
 mod wic;
 
 use eframe::egui::ColorImage;
 use std::path::Path;
+
+/// Render only the first PDF page, with a bounded output size.
+pub fn pdf_preview(path: &Path, max: u32) -> Option<ColorImage> {
+    #[cfg(target_os = "macos")]
+    return imageio::pdf_preview(path, max);
+    #[cfg(windows)]
+    return pdf_win::render(path, max);
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = (path, max);
+        None
+    }
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn pdf_size(width: f64, height: f64, max: u32) -> Option<(u32, u32)> {
+    if !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0 && max > 0) {
+        return None;
+    }
+    let long_edge = width.max(height);
+    let dimension = |n: f64| ((n / long_edge * f64::from(max)).round() as u32).max(1);
+    Some((dimension(width), dimension(height)))
+}
 
 /// A thumbnail at most `max` pixels on the long side (never enlarged).
 pub fn thumbnail(path: &Path, max: u32) -> Option<ColorImage> {
@@ -28,6 +53,24 @@ pub fn thumbnail(path: &Path, max: u32) -> Option<ColorImage> {
     } else {
         thumbnail_os(path, max).or_else(|| thumbnail_rust(path, max))
     }
+}
+
+pub fn preview_image(path: &Path, max: u32) -> Option<ColorImage> {
+    // Try downsampling with the platform codec before decoding a full-size image in Rust.
+    #[cfg(windows)]
+    let raster = wic::preview(path, max);
+    #[cfg(not(windows))]
+    let raster = thumbnail_os(path, max);
+    raster.or_else(|| {
+        let mut reader = image_reader(path)?;
+        let mut limits = image::Limits::default();
+        limits.max_alloc = Some(128 * 1024 * 1024);
+        reader.limits(limits);
+        let img = reader.decode().ok()?;
+        let (w, h) = fit(img.width(), img.height(), max);
+        let img = if (w, h) == (img.width(), img.height()) { img } else { img.thumbnail_exact(w, h) };
+        Some(color_image(img.into_rgba8()))
+    })
 }
 
 /// Formats the `image` crate decodes faster than the OS (see the module docs).
@@ -56,14 +99,19 @@ fn thumbnail_os(_path: &Path, _max: u32) -> Option<ColorImage> {
 
 /// Decodes with the `image` crate (only the formats built into it on this platform).
 fn thumbnail_rust(path: &Path, max: u32) -> Option<ColorImage> {
-    let img = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
-    let t = img.thumbnail(max, max).to_rgba8();
-    let size = [t.width() as usize, t.height() as usize];
-    Some(ColorImage::from_rgba_unmultiplied(size, t.as_raw()))
+    let img = image_reader(path)?.decode().ok()?;
+    Some(color_image(img.thumbnail(max, max).into_rgba8()))
+}
+
+fn image_reader(path: &Path) -> Option<image::ImageReader<std::io::BufReader<std::fs::File>>> {
+    image::ImageReader::open(path).ok()?.with_guessed_format().ok()
+}
+
+fn color_image(image: image::RgbaImage) -> ColorImage {
+    ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw())
 }
 
 /// Size of a `w`×`h` image scaled to fit in `max`×`max`, keeping the aspect ratio.
-#[allow(dead_code)]
 fn fit(w: u32, h: u32, max: u32) -> (u32, u32) {
     if w <= max && h <= max {
         return (w, h);
