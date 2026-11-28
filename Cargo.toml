@@ -42,7 +42,7 @@ rust-decoders = ["image/jpeg", "image/gif", "image/bmp", "image/webp", "image/ic
 winresource = { version = "0.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Com", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Ole", "Win32_System_Memory", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Com", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Ole", "Win32_System_Memory", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Registry"] }
 
 # Dragging files out to other apps (src/dragout.rs). Same versions eframe already uses.
 [target.'cfg(target_os = "macos")'.dependencies]

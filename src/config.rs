@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 const FAVORITES: &str = "favorites.txt";
+const UI_ZOOM: &str = "uiZoom.txt";
 
 pub fn dir() -> PathBuf {
     if let Some(d) = std::env::var_os("CONFIG_8823").filter(|d| !d.is_empty()) {
@@ -60,13 +61,29 @@ fn format_favorites(paths: &[PathBuf]) -> String {
     s
 }
 
-/// Written to a temporary file first, so a crash mid-write cannot leave a half list behind.
 pub fn save_favorites(paths: &[PathBuf]) -> std::io::Result<()> {
+    save_setting(FAVORITES, &format_favorites(paths))
+}
+
+pub fn load_ui_zoom() -> f32 {
+    std::fs::read_to_string(dir().join(UI_ZOOM))
+        .ok()
+        .and_then(|text| text.trim().parse::<f32>().ok())
+        .filter(|zoom| (0.2..=5.0).contains(zoom))
+        .unwrap_or(1.0)
+}
+
+pub fn save_ui_zoom(zoom: f32) -> std::io::Result<()> {
+    save_setting(UI_ZOOM, &format!("{zoom}\n"))
+}
+
+/// Replace the setting only after the new contents have been written.
+fn save_setting(name: &str, text: &str) -> std::io::Result<()> {
     let d = dir();
     std::fs::create_dir_all(&d)?;
-    let tmp = d.join(format!("{FAVORITES}.tmp"));
-    std::fs::write(&tmp, format_favorites(paths))?;
-    std::fs::rename(&tmp, d.join(FAVORITES))
+    let tmp = d.join(format!("{name}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, d.join(name))
 }
 
 #[cfg(test)]
