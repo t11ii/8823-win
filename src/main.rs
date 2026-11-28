@@ -3,8 +3,6 @@
 mod app;
 mod config;
 mod dragout;
-#[cfg(windows)]
-mod folder_app;
 mod fonts;
 mod fsx;
 mod osimg;

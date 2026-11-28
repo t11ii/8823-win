@@ -125,6 +125,28 @@ pub fn help() -> Vec<(String, String)> {
     v.into_iter().map(|(a, b)| (keys(a), b.to_string())).collect()
 }
 
+/// Read the folder argument passed by a Windows Shell association from an earlier version.
+#[cfg(windows)]
+pub fn windows_shell_folder(arg: std::ffi::OsString) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    let wide: Vec<u16> = arg.encode_wide().collect();
+    let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(
+        wide.strip_suffix(&[b'\\' as u16, b'.' as u16]).unwrap_or(&wide),
+    ));
+    path.is_absolute().then_some(path)
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn earlier_shell_launches_preserve_drive_roots_and_unc_folders() {
+    for target in [r"D:\", r"\\server\share\研究 メモ"] {
+        let arg = format!(r"{target}\.");
+        assert_eq!(windows_shell_folder(arg.into()), Some(target.into()));
+    }
+    assert_eq!(windows_shell_folder(r"relative\.".into()), None);
+}
+
 /// Show the item selected in Explorer / Finder.
 pub fn reveal(path: &Path) {
     #[cfg(windows)]
