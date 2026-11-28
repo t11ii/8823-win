@@ -7,7 +7,7 @@ A fast, keyboard-driven file manager for Windows and macOS, written in Rust, wit
 - Instant folder listing on a background thread; virtualised list that only draws visible rows, so folders with 100k+ files stay smooth.
 - Tabs (`Ctrl+T` / `Ctrl+W`, `Ctrl+Tab`, `Ctrl+1…9`, middle-click or `Ctrl+Enter` a folder to open it in a new tab). Drag tabs to reorder; show the tab strip on top or down the left side.
 - Single or dual pane, side by side or top/bottom, switched from the toolbar icons (`Ctrl+\` toggles; Tab switches pane).
-- In dual-pane view, each pane has its own tab strip. Tab shortcuts act on the focused pane.
+- In dual-pane view, each pane has its own tab strip. Tab shortcuts act on the focused pane. Drag a tab onto the other pane's tab strip, or onto the pane itself, to move it there.
 - Change the display scale from the percentage in the status bar. Use `Ctrl+-` to fit more items on screen and `Ctrl+0` to reset. The scale is saved between launches.
 - List or gallery view (`Ctrl+G`) with image thumbnails (PNG, JPEG, GIF, BMP, WebP, ICO, TIFF) decoded in the background.
 - File preview (`Ctrl+I` or the file's context menu) for images, UTF-8 and BOM-marked UTF-16 text, and the first page of a PDF. Previews load on demand in the background. Text shows up to 64 KiB, and images and PDFs up to 80 MiB are rendered at up to 1280 pixels on the long side.

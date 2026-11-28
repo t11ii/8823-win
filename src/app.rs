@@ -53,8 +53,33 @@ impl PaneTabs {
     }
 }
 
+/// Where the tab strips and panes were drawn this frame, for dragging tabs between panes.
+#[derive(Default)]
+struct TabLayout {
+    /// The area of each pane's tab strip (drop zone).
+    zones: [Option<egui::Rect>; 2],
+    /// Each tab's rectangle, per pane, in order.
+    rects: [Vec<egui::Rect>; 2],
+    /// Each pane's area (dropping a tab there appends it to that pane's tabs).
+    panes: [Option<egui::Rect>; 2],
+    /// A tab being dragged this frame: (pane, index).
+    dragging: Option<(usize, usize)>,
+    /// A tab released this frame: (pane, index).
+    dropped: Option<(usize, usize)>,
+}
+
+/// Where a dragged tab would land in the other pane.
+#[derive(Clone, Copy)]
+enum TabTarget {
+    /// In the pane's tab strip, before tab `at`.
+    Strip(usize, usize),
+    /// On the pane itself: after its last tab.
+    Pane(usize),
+}
+
 pub struct App {
     panes: [PaneTabs; 2],
+    tab_layout: TabLayout,
     active: usize,
     dual: bool,
     next_tab_id: u64,
@@ -112,6 +137,7 @@ impl App {
         }).unwrap_or_else(fsx::home_dir);
         let mut app = App {
             panes: [PaneTabs::new(0, start.clone()), PaneTabs::new(1, start)],
+            tab_layout: TabLayout::default(),
             active: 0,
             dual: false,
             next_tab_id: 2,
@@ -268,10 +294,12 @@ impl App {
         }
     }
 
-    /// Find the tab that started the listing or search.
-    fn pane_for(&mut self, pane: usize, req: u64) -> Option<&mut Pane> {
-        self.panes[pane].tabs
+    /// Find the tab that started the listing or search. Tabs can move between panes, so
+    /// look in both; request ids are unique.
+    fn pane_for(&mut self, _pane: usize, req: u64) -> Option<&mut Pane> {
+        self.panes
             .iter_mut()
+            .flat_map(|group| group.tabs.iter_mut())
             .map(|tab| &mut tab.pane)
             .find(|p| p.req == req)
     }
@@ -285,12 +313,13 @@ impl App {
     }
 
     /// The tab strip: along the top (`vertical == false`) or stacked in a left column.
-    /// Click to switch, drag to reorder, middle-click or × to close.
+    /// Click to switch, drag to reorder or onto the other pane, middle-click or × to close.
     fn tab_bar(&mut self, ui: &mut egui::Ui, p: usize, vertical: bool) {
         let mut switch = None;
         let mut close = None;
         let mut rects: Vec<egui::Rect> = Vec::new();
         let mut dragging: Option<usize> = None;
+        let mut dropped: Option<usize> = None;
         let group = &mut self.panes[p];
         let scroll_to_selected = std::mem::take(&mut group.scroll_to_selected);
         let n = group.tabs.len();
@@ -352,6 +381,9 @@ impl App {
                     dragging = Some(i);
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 }
+                if r.drag_stopped() {
+                    dropped = Some(i);
+                }
                 if n > 1 {
                     let x_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 13.0, rect.center().y), egui::vec2(16.0, 16.0));
                     let xr = ui.interact(x_rect, id.with("close"), egui::Sense::click());
@@ -380,19 +412,13 @@ impl App {
             body(ui);
         }
 
-        // Drag to reorder: move the dragged tab once the pointer passes a neighbour's middle.
-        if let (Some(i), Some(pos)) = (dragging, ui.ctx().pointer_interact_pos()) {
-            let along = |p: egui::Pos2| if vertical { p.y } else { p.x };
-            let mut to = i;
-            for (j, r) in rects.iter().enumerate() {
-                if (j > i && along(pos) > along(r.center())) || (j < i && along(pos) < along(r.center()) && to == i) {
-                    to = j;
-                }
-            }
-            if to != i {
-                self.move_tab(p, i, to);
-                switch = None;
-            }
+        // Reordering and moving to the other pane happen in `tab_drag`, once every strip is drawn.
+        self.tab_layout.rects[p] = rects;
+        if let Some(i) = dragging {
+            self.tab_layout.dragging = Some((p, i));
+        }
+        if let Some(i) = dropped {
+            self.tab_layout.dropped = Some((p, i));
         }
         if let Some(i) = switch {
             self.switch_tab(p, i);
@@ -400,6 +426,140 @@ impl App {
         if let Some(i) = close {
             self.close_tab(p, i);
         }
+    }
+
+    /// Move tab `i` of pane `from` into pane `to` before position `at` (clamped), select it
+    /// there and focus that pane. A pane left without tabs closes: the other pane is shown
+    /// alone, and the closed side starts over with one tab the next time dual is turned on.
+    fn move_tab_across(&mut self, from: usize, i: usize, to: usize, at: usize) {
+        if from == to || i >= self.panes[from].tabs.len() {
+            return;
+        }
+        let last = self.panes[from].tabs.len() == 1;
+        if !last && i == self.panes[from].selected {
+            let next = if i + 1 < self.panes[from].tabs.len() { i + 1 } else { i - 1 };
+            self.switch_tab(from, next);
+        }
+        let group = &mut self.panes[from];
+        let mut tab = group.tabs.remove(i);
+        if !last && i < group.selected {
+            group.selected -= 1;
+        }
+        tab.pane.scroll_to_cursor = true;
+        let group = &mut self.panes[to];
+        let at = at.min(group.tabs.len());
+        group.tabs.insert(at, tab);
+        group.selected = at;
+        group.scroll_to_selected = true;
+        self.active = to;
+        if last {
+            let mut keep = to;
+            if from == 0 {
+                self.panes.swap(0, 1);
+                keep = 0;
+            }
+            let id = self.next_tab_id;
+            self.next_tab_id += 1;
+            let path = self.panes[keep].pane().path.clone();
+            let gallery = self.panes[keep].pane().gallery;
+            self.panes[1] = PaneTabs::new(id, path);
+            self.panes[1].pane_mut().gallery = gallery;
+            self.dual = false;
+            self.active = 0;
+        }
+    }
+
+    /// Where a tab dragged from pane `from` would land if released at `pos`.
+    fn tab_target(&self, from: usize, pos: egui::Pos2) -> Option<TabTarget> {
+        if !self.dual {
+            return None;
+        }
+        let o = 1 - from;
+        let l = &self.tab_layout;
+        if l.zones[o].is_some_and(|z| z.expand(4.0).contains(pos)) {
+            let vertical = self.tabs_vertical;
+            let along = |p: egui::Pos2| if vertical { p.y } else { p.x };
+            let at = l.rects[o].iter().position(|r| along(pos) < along(r.center())).unwrap_or(l.rects[o].len());
+            return Some(TabTarget::Strip(o, at));
+        }
+        if l.panes[o].is_some_and(|r| r.contains(pos)) {
+            return Some(TabTarget::Pane(o));
+        }
+        None
+    }
+
+    /// After every strip and pane is drawn: reorder a dragged tab within its strip, or show
+    /// where it would go in the other pane and move it there when released.
+    fn tab_drag(&mut self, ui: &egui::Ui) {
+        let layout = std::mem::take(&mut self.tab_layout);
+        let ctx = ui.ctx();
+        let Some(pos) = ctx.pointer_latest_pos() else { return };
+        if let Some((side, i)) = layout.dropped {
+            self.tab_layout = layout;
+            match self.tab_target(side, pos) {
+                Some(TabTarget::Strip(to, at)) => self.move_tab_across(side, i, to, at),
+                Some(TabTarget::Pane(to)) => self.move_tab_across(side, i, to, usize::MAX),
+                None => {}
+            }
+            self.tab_layout = TabLayout::default();
+            return;
+        }
+        let Some((side, i)) = layout.dragging else { return };
+        self.tab_layout = layout;
+        let vertical = self.tabs_vertical;
+        let along = |p: egui::Pos2| if vertical { p.y } else { p.x };
+        let Some(target) = self.tab_target(side, pos) else {
+            // Within its own strip: move the tab once the pointer passes a neighbour's middle.
+            if self.tab_layout.zones[side].is_some_and(|z| z.expand(4.0).contains(pos)) {
+                let mut to = i;
+                for (j, r) in self.tab_layout.rects[side].iter().enumerate() {
+                    if (j > i && along(pos) > along(r.center())) || (j < i && along(pos) < along(r.center()) && to == i) {
+                        to = j;
+                    }
+                }
+                if to != i && i.max(to) < self.panes[side].tabs.len() {
+                    self.move_tab(side, i, to);
+                }
+            }
+            self.tab_layout = TabLayout::default();
+            return;
+        };
+        let pal = theme::pal(ui);
+        let fg = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("tab-drag")));
+        match target {
+            TabTarget::Strip(to, at) => {
+                // Insertion marker between tabs.
+                let rs = &self.tab_layout.rects[to];
+                let zone = self.tab_layout.zones[to].unwrap_or(egui::Rect::NOTHING);
+                let (v, span) = match (rs.get(at), at.checked_sub(1).and_then(|k| rs.get(k))) {
+                    (Some(r), _) => (if vertical { r.top() - 1.0 } else { r.left() - 1.0 }, *r),
+                    (None, Some(r)) => (if vertical { r.bottom() + 1.0 } else { r.right() + 1.0 }, *r),
+                    (None, None) => (if vertical { zone.top() + 2.0 } else { zone.left() + 2.0 }, zone),
+                };
+                let line = if vertical {
+                    egui::Rect::from_min_max(egui::pos2(span.left(), v - 1.0), egui::pos2(span.right(), v + 1.0))
+                } else {
+                    egui::Rect::from_min_max(egui::pos2(v - 1.0, span.top() + 4.0), egui::pos2(v + 1.0, span.bottom() - 4.0))
+                };
+                fg.rect_filled(line, 1.0, pal.accent);
+            }
+            TabTarget::Pane(to) => {
+                if let Some(r) = self.tab_layout.panes[to] {
+                    fg.rect(r.shrink(1.0), 8.0, pal.accent.gamma_multiply(0.08), egui::Stroke::new(2.0, pal.accent), egui::StrokeKind::Inside);
+                }
+            }
+        }
+        // A small copy of the tab follows the pointer.
+        if let Some(tab) = self.panes[side].tabs.get(i) {
+            let path = &tab.pane.path;
+            let title = path.file_name().map(crate::text::display_name).unwrap_or_else(|| path.display().to_string());
+            let galley = ctx.fonts_mut(|f| f.layout_no_wrap(title, egui::FontId::proportional(13.0), pal.strong));
+            let size = egui::vec2(galley.size().x.min(220.0) + 20.0, 26.0);
+            let r = egui::Rect::from_min_size(pos + egui::vec2(12.0, 10.0), size);
+            fg.rect(r, 6.0, pal.surface, egui::Stroke::new(1.0, pal.accent), egui::StrokeKind::Inside);
+            fg.with_clip_rect(r.shrink(4.0)).galley(egui::pos2(r.left() + 10.0, r.center().y - galley.size().y / 2.0), galley, pal.strong);
+        }
+        self.tab_layout = TabLayout::default();
     }
 
     fn new_tab_button(&mut self, ui: &mut egui::Ui, p: usize) {
@@ -421,7 +581,7 @@ impl App {
     }
 
     fn horizontal_tabs(&mut self, ui: &mut egui::Ui, p: usize, width: f32) {
-        ui.horizontal(|ui| {
+        let row = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             egui::ScrollArea::horizontal()
                 .id_salt(("tabs-scroll", p))
@@ -430,9 +590,11 @@ impl App {
                 .show(ui, |ui| ui.horizontal(|ui| self.tab_bar(ui, p, false)));
             self.new_tab_button(ui, p);
         });
+        self.tab_layout.zones[p] = Some(row.response.rect);
     }
 
     fn vertical_tabs(&mut self, ui: &mut egui::Ui, p: usize) {
+        self.tab_layout.zones[p] = Some(ui.available_rect_before_wrap());
         self.new_tab_button(ui, p);
         egui::ScrollArea::vertical()
             .id_salt(("vtabs-scroll", p))
@@ -449,6 +611,7 @@ impl App {
     }
 
     fn split_pane_ui(&mut self, ui: &mut egui::Ui, p: usize, tabs_vertical: bool, actions: &mut Vec<Action>) {
+        self.tab_layout.panes[p] = Some(ui.available_rect_before_wrap());
         // The second pane has no listing until it is first displayed or navigated to.
         if self.panes[p].pane().req == 0 {
             self.load(p);
@@ -1348,6 +1511,7 @@ impl eframe::App for App {
                 self.pane_ui(ui, 0, &mut actions);
             }
         });
+        self.tab_drag(ui);
         if (dual, stacked, tabs_vertical) != (self.dual, self.split_stacked, self.tabs_vertical) {
             for group in &mut self.panes {
                 group.scroll_to_selected = true;
