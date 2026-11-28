@@ -439,7 +439,8 @@ impl App {
     fn pane_ui(&mut self, ui: &mut egui::Ui, p: usize, actions: &mut Vec<Action>) {
         let group = &mut self.panes[p];
         let tab = &mut group.tabs[group.selected];
-        ui.push_id(("pane-tab", tab.id), |ui| {
+        let scope = egui::Id::unique(("pane-tab", tab.id));
+        ui.scope_builder(egui::UiBuilder::new().scope_id(scope), |ui| {
             tab.pane.ui(ui, p, self.active == p, self.show_hidden, &mut self.thumbs, actions);
         });
     }
@@ -1570,5 +1571,37 @@ mod tests {
                 }
             }).drop_without_applying_deltas();
         }
+    }
+
+    #[test]
+    fn changing_split_layout_preserves_the_list_scroll_position() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        let mut frame = eframe::Frame::_new_kittest();
+        app.dual = true;
+        let pane = app.panes[0].pane_mut();
+        pane.path = PathBuf::from("scrollPositionTest");
+        let entries = (0..160).map(|i| {
+            let name = format!("file{i:03}");
+            fsx::Entry::new(pane.path.join(&name), name.into(), None, None)
+        }).collect();
+        pane.set_entries(entries, (fsx::SortKey::Name, true), false);
+        pane.move_cursor(80, false);
+
+        let mut display = |app: &mut App| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 700.0))),
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| app.ui(ui, &mut frame)).drop_without_applying_deltas();
+            app.panes[0].pane().scroll_y
+        };
+
+        let before = display(&mut app);
+        assert!(before > 0.0, "initial list did not scroll");
+        app.split_stacked = true;
+        assert_eq!(display(&mut app), before);
+        app.dual = false;
+        assert_eq!(display(&mut app), before);
     }
 }
