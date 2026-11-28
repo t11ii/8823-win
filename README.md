@@ -7,6 +7,8 @@ A fast, keyboard-driven file manager for Windows and macOS, written in Rust, wit
 - Instant folder listing on a background thread; virtualised list that only draws visible rows, so folders with 100k+ files stay smooth.
 - Tabs (`Ctrl+T` / `Ctrl+W`, `Ctrl+Tab`, `Ctrl+1…9`, middle-click or `Ctrl+Enter` a folder to open it in a new tab). Drag tabs to reorder; show the tab strip on top or down the left side.
 - Single or dual pane, side by side or top/bottom, switched from the toolbar icons (`Ctrl+\` toggles; Tab switches pane).
+- In dual-pane view, each pane has its own tab strip. Tab shortcuts act on the focused pane.
+- Change the display scale from the percentage in the status bar. Use `Ctrl+-` to fit more items on screen and `Ctrl+0` to reset. The scale is saved between launches.
 - List or gallery view (`Ctrl+G`) with image thumbnails (PNG, JPEG, GIF, BMP, WebP, ICO, TIFF) decoded in the background.
 - Dark and light themes that follow the system setting (`THEME_8823=light|dark` forces one).
 - Type to filter: just start typing in the list (Japanese IME included); ↑↓ pick, Enter opens, Esc clears. Can be turned off in the status bar.
@@ -20,6 +22,7 @@ A fast, keyboard-driven file manager for Windows and macOS, written in Rust, wit
 - Favorites in the sidebar: add any folder with the `+` next to FAVORITES, with `Ctrl+D`, or from the right-click menu. Drag to reorder, right-click to remove. They are kept in a plain text file, `favorites.txt`, under `%APPDATA%\8823` (Windows) or `~/Library/Application Support/8823` (macOS); set `CONFIG_8823` to use another folder.
 - Go-to palette (`Ctrl+P`) over favorites, recent folders and drives.
 - Press `F1` for every shortcut.
+- The window title shows the version and includes the short commit ID in GitHub Actions builds.
 
 ## Why egui / eframe
 
@@ -63,6 +66,12 @@ The app is ad-hoc signed, not notarized. On first launch, right-click 8823.app �
 
 GitHub Actions (`.github/workflows/build.yml`) builds `8823-win.zip` (containing `8823.exe`) and `8823-mac.zip` on every push and attaches both to releases for `v*` tags.
 
+## Default folder app on Windows
+
+Open `?` → **Default folder app…** → **Set 8823 as default** to use this copy of 8823 for regular folders and drives opened through the Windows Shell's default action. The setting applies to your Windows account and uses the full path to the running executable.
+
+Choose **Restore previous setting** in the same dialog to restore the prior setting. Restore it before removing `8823.exe`. If you move the executable, open the new copy and register it again.
+
 ## macOS differences
 
 - Shortcuts use ⌘ wherever Windows uses Ctrl, plus Finder conventions: ⌘⌫ Trash, ⌥⌘⌫ delete permanently, ⌘↑ parent, ⌘↓ / ⌘O open, ⌘[ ⌘] back/forward, ⇧⌘G go to folder, ⇧⌘. hidden files, ⌥⌘C copy path.
@@ -88,4 +97,5 @@ GitHub Actions (`.github/workflows/build.yml`) builds `8823-win.zip` (containing
 | Ctrl+Shift+N | New folder |
 | Ctrl+\\ / Tab | Dual pane / switch pane |
 | Ctrl+H | Show hidden files |
+| Ctrl+- / Ctrl+0 | Zoom out / reset display scale |
 | F5 | Refresh |

@@ -82,7 +82,7 @@ pub enum Action {
     Reveal(PathBuf),
     Terminal(PathBuf),
     CloseSearch(usize),
-    OpenInNewTab(PathBuf),
+    OpenInNewTab(usize, PathBuf),
     /// Add the folder to the sidebar favourites, or remove it if it is already there.
     ToggleFavorite(PathBuf),
     /// The pointer dragged the pane's selection; hand it to the OS so it can leave the window.
@@ -339,7 +339,7 @@ impl Pane {
                 Key::End => self.move_cursor(isize::MAX / 2, m.shift),
                 Key::Enter if m.command => {
                     if let Some(e) = self.cursor_entry().filter(|e| e.is_dir) {
-                        out.push(Action::OpenInNewTab(e.path.clone()));
+                        out.push(Action::OpenInNewTab(id, e.path.clone()));
                     }
                 }
                 Key::Enter => out.push(Action::OpenCursor(id)),
@@ -495,12 +495,14 @@ impl Pane {
             ui.spacing_mut().item_spacing.x = 8.0;
 
             // Filter box on the right, address bar in the remaining space.
-            let filter_w = 190.0;
+            let available = ui.available_width();
+            let filter_w = (available / 3.0).min(190.0);
             let bar_h = 26.0;
-            let path_w = (ui.available_width() - filter_w - 8.0).max(80.0);
+            let path_w = (available - filter_w - 8.0).max(0.0);
 
             if let Some(text) = &mut self.path_edit {
-                let resp = ui.add_sized([path_w, bar_h], egui::TextEdit::singleline(text).id(egui::Id::unique(("path", id))).align(egui::Align2::LEFT_CENTER));
+                let path_id = ui.make_persistent_id("path");
+                let resp = ui.add_sized([path_w, bar_h], egui::TextEdit::singleline(text).id(path_id).align(egui::Align2::LEFT_CENTER));
                 if !resp.has_focus() && !resp.lost_focus() {
                     resp.request_focus();
                 }
@@ -554,7 +556,7 @@ impl Pane {
                     });
             }
 
-            let fid = egui::Id::unique(("filter", id));
+            let fid = ui.make_persistent_id("filter");
             // While typing in the filter: ↑/↓ move through the list, Enter opens, Esc clears.
             if ui.memory(|m| m.has_focus(fid)) {
                 let (up, down) = ui.input_mut(|i| {
@@ -783,7 +785,8 @@ impl Pane {
         if renaming {
             let r = self.rename.as_mut().unwrap();
             let edit_rect = Rect::from_min_max(pos2(cols.name.left() + 30.0, rect.top() + 2.0), pos2(cols.name.right() - 4.0, rect.bottom() - 2.0));
-            let te = ui.put(edit_rect, egui::TextEdit::singleline(&mut r.text).id(egui::Id::unique(("rename", id))).margin(Vec2::new(2.0, 1.0)));
+            let rename_id = ui.make_persistent_id("rename");
+            let te = ui.put(edit_rect, egui::TextEdit::singleline(&mut r.text).id(rename_id).margin(Vec2::new(2.0, 1.0)));
             if r.focus {
                 te.request_focus();
                 // Pre-select the stem so typing replaces the name but keeps the extension.
@@ -858,7 +861,7 @@ impl Pane {
             }
         }
         if resp.middle_clicked() && is_dir {
-            out.push(Action::OpenInNewTab(path.clone()));
+            out.push(Action::OpenInNewTab(id, path.clone()));
         }
         if resp.double_clicked() {
             self.cursor = vi;
@@ -869,7 +872,7 @@ impl Pane {
                 out.push(Action::OpenCursor(id));
             }
             if is_dir && ui.button(format!("Open in new tab\t{}", k("Ctrl+Enter"))).clicked() {
-                out.push(Action::OpenInNewTab(path.clone()));
+                out.push(Action::OpenInNewTab(id, path.clone()));
             }
             if is_dir && ui.button("Open in other pane").clicked() {
                 out.push(Action::OpenInOther(id));
