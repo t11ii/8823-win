@@ -79,6 +79,7 @@ pub struct App {
     fav_dirty: bool,
     drives: Vec<PathBuf>,
     font: Option<String>,
+    startup_bg: crate::plat::StartupBackground,
     /// Frame-rate cap on Windows, where vsync is off (see `pace.rs`).
     pacer: crate::pace::Pacer,
     /// The last drag of files out of the window (see `dragout.rs`).
@@ -95,6 +96,8 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let font = crate::fonts::install(&cc.egui_ctx);
         theme::install(&cc.egui_ctx);
+        let bg = if cc.egui_ctx.theme() == egui::Theme::Dark { theme::DARK.bg } else { theme::LIGHT.bg };
+        let startup_bg = crate::plat::StartupBackground::install(cc, bg);
         let ui_zoom = crate::config::load_ui_zoom();
         cc.egui_ctx.set_zoom_factor(ui_zoom);
         let (tx, rx) = channel();
@@ -131,6 +134,7 @@ impl App {
             fav_dirty: false,
             drives: fsx::drives(),
             font,
+            startup_bg,
             pacer: crate::pace::Pacer::new(),
             drag_out: None,
         };
@@ -1202,6 +1206,9 @@ impl App {
     }
 }
 
+/// How long the window keeps its startup background (see `plat::StartupBackground`).
+const STARTUP_BG_SECS: f64 = 0.6;
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.pacer.frame_start();
@@ -1215,6 +1222,16 @@ impl eframe::App for App {
         }
         self.poll();
         self.thumbs.poll(&ctx);
+        if self.startup_bg.active() {
+            // Keep drawing while the startup background is in place, so a frame always
+            // follows any erase Windows does with it; then hand back to winit's default.
+            if ctx.input(|i| i.time) < STARTUP_BG_SECS {
+                ctx.request_repaint();
+            } else {
+                self.startup_bg.remove();
+                ctx.request_repaint();
+            }
+        }
         let mut actions = Vec::new();
         self.global_keys(&ctx, &mut actions);
         let (dual, stacked, tabs_vertical) = (self.dual, self.split_stacked, self.tabs_vertical);
