@@ -67,12 +67,6 @@ The app is ad-hoc signed, not notarized. On first launch, right-click 8823.app �
 
 GitHub Actions (`.github/workflows/build.yml`) builds `8823-win.zip` (containing `8823.exe`) and `8823-mac.zip` on every push and attaches both to releases for `v*` tags.
 
-## Default folder app on Windows
-
-Open `?` → **Default folder app…** → **Set 8823 as default** to use this copy of 8823 for regular folders and drives opened through the Windows Shell's default action. The setting applies to your Windows account and uses the full path to the running executable.
-
-Choose **Restore previous setting** in the same dialog to restore the prior setting. Restore it before removing `8823.exe`. If you move the executable, open the new copy and register it again.
-
 ## macOS differences
 
 - Shortcuts use ⌘ wherever Windows uses Ctrl, plus Finder conventions: ⌘⌫ Trash, ⌥⌘⌫ delete permanently, ⌘↑ parent, ⌘↓ / ⌘O open, ⌘[ ⌘] back/forward, ⇧⌘G go to folder, ⇧⌘. hidden files, ⌥⌘C copy path.

@@ -1,5 +1,3 @@
-#[cfg(windows)]
-use crate::folder_app;
 use crate::fsx::{self, Bg, Msg};
 use crate::pane::{Action, Pane, Rename, SearchState};
 use crate::preview::{self, Preview};
@@ -19,8 +17,6 @@ enum Dialog {
     Errors(Vec<String>),
     Preview(Preview),
     Help,
-    #[cfg(windows)]
-    FolderApp { status: std::io::Result<folder_app::Status>, error: Option<String> },
 }
 
 struct Tab {
@@ -104,8 +100,8 @@ impl App {
         let mut args = std::env::args_os().skip(1);
         let start = args.next().and_then(|first| {
             #[cfg(windows)]
-            if first == folder_app::OPEN_FLAG {
-                return args.next().and_then(folder_app::shell_path);
+            if first == "--open-folder" {
+                return args.next().and_then(crate::plat::windows_shell_folder);
             }
             let path = PathBuf::from(first);
             path.is_dir().then_some(path)
@@ -1164,16 +1160,6 @@ impl App {
                 }
                 Dialog::Preview(preview) => keep = !preview.show(ui),
                 Dialog::Help => {
-                    #[cfg(windows)]
-                    {
-                        if ui.button("Default folder app…").clicked() {
-                            keep = false;
-                            after = Some(Box::new(|app| {
-                                app.dialog = Some(Dialog::FolderApp { status: folder_app::status(), error: None });
-                            }));
-                        }
-                        ui.separator();
-                    }
                     ui.heading("Keyboard");
                     egui::Grid::new("help").striped(true).show(ui, |ui| {
                         for (k, v) in crate::plat::help() {
@@ -1184,39 +1170,6 @@ impl App {
                     });
                     if ui.button("Close").clicked() {
                         keep = false;
-                    }
-                }
-                #[cfg(windows)]
-                Dialog::FolderApp { status, error } => {
-                    ui.heading("Default folder app");
-                    ui.label("Use this copy of 8823 to open regular folders and drives for your Windows account.");
-                    ui.weak("Keep 8823.exe at this location while it is registered.");
-                    match status {
-                        Ok(state) if state.selected == 2 => { ui.label("8823 is registered for folders and drives."); }
-                        Ok(state) if state.selected == 1 => { ui.label("8823 is registered for either folders or drives."); }
-                        Ok(_) => {}
-                        Err(err) => { ui.colored_label(ui.visuals().error_fg_color, format!("Could not read folder settings. {err}")); }
-                    }
-                    if let Some(err) = error {
-                        ui.colored_label(ui.visuals().error_fg_color, err.as_str());
-                    }
-                    let can_restore = status.as_ref().map_or(true, |state| state.can_restore);
-                    let mut change = None;
-                    ui.horizontal(|ui| {
-                        if ui.button("Set 8823 as default").clicked() {
-                            change = Some(true);
-                        }
-                        if ui.add_enabled(can_restore, egui::Button::new("Restore previous setting")).clicked() {
-                            change = Some(false);
-                        }
-                        if ui.button("Close").clicked() {
-                            keep = false;
-                        }
-                    });
-                    if let Some(enabled) = change {
-                        *error = folder_app::set_default(enabled).err()
-                            .map(|err| format!("Could not change folder settings. {err}"));
-                        *status = folder_app::status();
                     }
                 }
             }
