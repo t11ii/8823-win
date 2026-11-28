@@ -100,6 +100,7 @@ pub fn help() -> Vec<(String, String)> {
         ("Ctrl+Enter, middle-click", "Open folder in new tab"),
         ("(just type)", "Filter this folder; ↑↓ to pick, Enter to open"),
         ("Ctrl+G", "List / gallery view"),
+        ("Ctrl+I", "Open or close file preview"),
         ("Ctrl+- / Ctrl+0", "Make the display smaller / reset display scale"),
         ("Ctrl+\\", "Toggle dual pane"),
         ("Tab", "Switch pane"),

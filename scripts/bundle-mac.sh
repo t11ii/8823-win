@@ -24,6 +24,9 @@ else
 fi
 
 cp assets/icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+mkdir -p "$APP/Contents/Resources/licenses"
+cp assets/fonts/OFL.txt assets/fonts/egui/NotoEmoji-OFL.txt assets/fonts/egui/emoji-icon-font-mit-license.txt \
+  "$APP/Contents/Resources/licenses/"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

@@ -6,6 +6,7 @@
 //! "2610_研究AIを作る.pdf" sit on a single baseline, and the Japanese glyphs are scaled
 //! to 92% and lowered slightly so they line up optically with the Latin. (Pairing a Latin font with a
 //! separate Japanese fallback makes kana/kanji ride higher or lower than the Latin.)
+//! A full-width character advances by two half-width cells.
 //! The system's Japanese font stays loaded as a last resort for rare glyphs.
 
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
@@ -120,5 +121,38 @@ fn ttc_face_count(b: &[u8]) -> u32 {
         u32::from_be_bytes([b[8], b[9], b[10], b[11]])
     } else {
         1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_font_aligns_fullwidth_and_halfwidth_text() {
+        let ctx = egui::Context::default();
+        let mut definitions = FontDefinitions::empty();
+        definitions.font_data.insert("bundled".into(), Arc::new(FontData::from_static(BUNDLED)));
+        definitions.families.insert(FontFamily::Proportional, vec!["bundled".into()]);
+        ctx.set_fonts(definitions);
+
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.fonts_mut(|fonts| {
+                let font = egui::FontId::proportional(12.0);
+                let cell = fonts.glyph_width(&font, '0');
+                assert!(cell > 0.0);
+                for ch in " AWilm09éｱｶﾞ".chars() {
+                    assert!(fonts.has_glyph(&font, ch), "missing {ch:?}");
+                    assert_eq!(fonts.glyph_width(&font, ch), cell, "{ch:?}");
+                }
+                for ch in "Ａ０日本語あいうカタカナ。、「」　".chars() {
+                    assert!(fonts.has_glyph(&font, ch), "missing {ch:?}");
+                    assert_eq!(fonts.glyph_width(&font, ch), 2.0 * cell, "{ch:?}");
+                }
+                let mixed = fonts.layout_no_wrap("A研究ｶ1".into(), font.clone(), egui::Color32::WHITE);
+                let latin = fonts.layout_no_wrap("1234567".into(), font, egui::Color32::WHITE);
+                assert_eq!(mixed.size().x, latin.size().x);
+            });
+        }).drop_without_applying_deltas();
     }
 }

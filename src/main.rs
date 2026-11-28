@@ -11,6 +11,7 @@ mod osimg;
 mod pace;
 mod pane;
 mod plat;
+mod preview;
 mod text;
 mod theme;
 mod thumbs;
