@@ -23,7 +23,9 @@ pub struct Thumbs {
 }
 
 pub fn is_image(ext: &str) -> bool {
+    // HEIC comes free with the OS decoders (on Windows when the HEIF codec is installed).
     matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "tif" | "tiff")
+        || (cfg!(any(windows, target_os = "macos")) && matches!(ext, "heic" | "heif"))
 }
 
 impl Thumbs {
@@ -90,8 +92,5 @@ fn decode(path: &Path) -> Option<ColorImage> {
     if len > MAX_FILE_BYTES {
         return None;
     }
-    let img = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
-    let t = img.thumbnail(THUMB_PX, THUMB_PX).to_rgba8();
-    let size = [t.width() as usize, t.height() as usize];
-    Some(ColorImage::from_rgba_unmultiplied(size, t.as_raw()))
+    crate::osimg::thumbnail(path, THUMB_PX)
 }

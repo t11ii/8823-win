@@ -50,9 +50,31 @@ fn candidates() -> Vec<(PathBuf, u32)> {
 
 static BUNDLED: &[u8] = include_bytes!("../assets/fonts/8823Gothic-Regular.ttf");
 
+// egui's fallback fonts, minus Hack and Ubuntu-Light (8823 Gothic covers what they do).
+// Copied from epaint_default_fonts 0.37 so the egui `default_fonts` feature can stay
+// off; with it on, Hack and Ubuntu-Light are linked in even when unused.
+static EGUI_ICONS: &[u8] = include_bytes!("../assets/fonts/egui/egui-icons.ttf");
+static NOTO_EMOJI: &[u8] = include_bytes!("../assets/fonts/egui/NotoEmoji-Regular.ttf");
+static EMOJI_ICON: &[u8] = include_bytes!("../assets/fonts/egui/emoji-icon-font.ttf");
+
+/// Same fonts, order and scaling as egui's own defaults (after its Hack/Ubuntu-Light).
+fn egui_fallbacks() -> FontDefinitions {
+    let mut fonts = FontDefinitions::empty();
+    let tweak = |bytes: &'static [u8], scale: f32| {
+        Arc::new(FontData::from_static(bytes).tweak(egui::FontTweak { scale, ..Default::default() }))
+    };
+    fonts.font_data.insert("egui-icons".into(), tweak(EGUI_ICONS, 0.90));
+    fonts.font_data.insert("NotoEmoji-Regular".into(), tweak(NOTO_EMOJI, 0.81));
+    fonts.font_data.insert("emoji-icon-font".into(), tweak(EMOJI_ICON, 0.90));
+    let list: Vec<String> = ["egui-icons", "NotoEmoji-Regular", "emoji-icon-font"].map(String::from).into();
+    fonts.families.insert(FontFamily::Proportional, list.clone());
+    fonts.families.insert(FontFamily::Monospace, list);
+    fonts
+}
+
 /// Returns a description of the font in use, for the status bar.
 pub fn install(ctx: &egui::Context) -> Option<String> {
-    let mut fonts = FontDefinitions::default();
+    let mut fonts = egui_fallbacks();
     let mut primary = vec!["8823-gothic".to_string()];
     fonts.font_data.insert("8823-gothic".into(), Arc::new(FontData::from_static(BUNDLED)));
     let mut desc = "8823 Gothic (JetBrains Mono + BIZ UDゴシック)".to_string();
