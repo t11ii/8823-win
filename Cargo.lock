@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "app8823"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "eframe",
@@ -78,6 +78,7 @@ dependencies = [
  "raw-window-handle",
  "trash",
  "unicode-normalization",
+ "windows",
  "windows-sys 0.61.2",
  "winresource",
 ]

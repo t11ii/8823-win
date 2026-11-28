@@ -9,7 +9,7 @@ use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr::null_mut;
-use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
 use windows_sys::core::GUID;
 
 type Hr = i32;
@@ -68,6 +68,14 @@ fn ok(hr: Hr) -> Option<()> {
     (hr >= 0).then_some(())
 }
 
+fn create_factory() -> Option<Com> {
+    let mut p: Ptr = null_mut();
+    unsafe {
+        ok(CoCreateInstance(&CLSID_WIC_IMAGING_FACTORY, null_mut(), CLSCTX_INPROC_SERVER, &IID_IWIC_IMAGING_FACTORY, &mut p))?;
+    }
+    Some(Com(p))
+}
+
 thread_local! {
     /// One factory per worker thread (COM is initialised once per thread, multithreaded).
     static FACTORY: RefCell<Option<Com>> = const { RefCell::new(None) };
@@ -79,18 +87,34 @@ fn with_factory<R>(f: impl FnOnce(&Com) -> Option<R>) -> Option<R> {
         if cell.is_none() {
             unsafe {
                 CoInitializeEx(std::ptr::null(), COINIT_MULTITHREADED as u32);
-                let mut p: Ptr = null_mut();
-                ok(CoCreateInstance(&CLSID_WIC_IMAGING_FACTORY, null_mut(), CLSCTX_INPROC_SERVER, &IID_IWIC_IMAGING_FACTORY, &mut p))?;
-                *cell = Some(Com(p));
             }
+            *cell = create_factory();
         }
         f(cell.as_ref()?)
     })
 }
 
 pub fn thumbnail(path: &Path, max: u32) -> Option<ColorImage> {
+    with_factory(|factory| decode(factory, path, max))
+}
+
+/// A single preview uses a short-lived worker, so release COM before that thread exits.
+pub fn preview(path: &Path, max: u32) -> Option<ColorImage> {
+    struct Apartment;
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            unsafe { CoUninitialize() }
+        }
+    }
+    ok(unsafe { CoInitializeEx(std::ptr::null(), COINIT_MULTITHREADED as u32) })?;
+    let _apartment = Apartment;
+    let factory = create_factory()?;
+    decode(&factory, path, max)
+}
+
+fn decode(factory: &Com, path: &Path, max: u32) -> Option<ColorImage> {
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    with_factory(|factory| unsafe {
+    unsafe {
         let mut p: Ptr = null_mut();
         ok(factory.f::<unsafe extern "system" fn(Ptr, *const u16, *const GUID, u32, i32, *mut Ptr) -> Hr>(slot::CREATE_DECODER_FROM_FILENAME)(
             factory.0,
@@ -178,7 +202,7 @@ pub fn thumbnail(path: &Path, max: u32) -> Option<ColorImage> {
             buf.as_mut_ptr(),
         ))?;
         Some(ColorImage::from_rgba_unmultiplied([tw as usize, th as usize], &buf))
-    })
+    }
 }
 
 fn guid_eq(a: &GUID, b: &GUID) -> bool {

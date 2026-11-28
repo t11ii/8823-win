@@ -2,6 +2,7 @@
 use crate::folder_app;
 use crate::fsx::{self, Bg, Msg};
 use crate::pane::{Action, Pane, Rename, SearchState};
+use crate::preview::{self, Preview};
 use crate::text::{fold, fuzzy_score};
 use crate::theme::{self, Glyph};
 use eframe::egui::{self, Key};
@@ -16,6 +17,7 @@ enum Dialog {
     Search { pane: usize, query: String, focus: bool },
     Palette { text: String, sel: usize, focus: bool },
     Errors(Vec<String>),
+    Preview(Preview),
     Help,
     #[cfg(windows)]
     FolderApp { status: std::io::Result<folder_app::Status>, error: Option<String> },
@@ -72,6 +74,7 @@ pub struct App {
     status: String,
     busy: bool,
     dialog: Option<Dialog>,
+    preview_running: bool,
     recent: Vec<PathBuf>,
     /// Sidebar favourites as (label, folder), in display order.
     quick: Vec<(String, PathBuf)>,
@@ -114,7 +117,7 @@ impl App {
             next_tab_id: 2,
             tabs_vertical: false,
             split_stacked: false,
-            thumbs: crate::thumbs::Thumbs::new(&cc.egui_ctx),
+            thumbs: crate::thumbs::Thumbs::new(),
             ui_zoom,
             type_to_filter: true,
             show_hidden: false,
@@ -126,6 +129,7 @@ impl App {
             status: String::new(),
             busy: false,
             dialog: None,
+            preview_running: false,
             recent: Vec::new(),
             quick: initial_favorites(),
             fav_dirty: false,
@@ -139,7 +143,6 @@ impl App {
         }
         app.publish_favorites();
         app.load(0);
-        app.load(1);
         app
     }
 
@@ -166,7 +169,7 @@ impl App {
             self.status = "Already in Favorites".into();
             return;
         }
-        let name = favorite_name(&path, &fsx::quick_access());
+        let name = favorite_name(&path, &fsx::quick_access(&fsx::standard_folders()));
         self.status = format!("Added to Favorites: {name}");
         self.quick.push((name, path));
         self.favorites_changed();
@@ -446,6 +449,10 @@ impl App {
     }
 
     fn split_pane_ui(&mut self, ui: &mut egui::Ui, p: usize, tabs_vertical: bool, actions: &mut Vec<Action>) {
+        // The second pane has no listing until it is first displayed or navigated to.
+        if self.panes[p].pane().req == 0 {
+            self.load(p);
+        }
         ui.shrink_clip_rect(ui.available_rect_before_wrap().expand(1.0));
         pane_frame(ui, self.active == p, |ui| {
             let width = ui.available_width();
@@ -504,7 +511,8 @@ impl App {
 
     fn refresh_all(&mut self) {
         for p in 0..2 {
-            if self.panes[p].pane().search.is_none() {
+            let pane = self.panes[p].pane();
+            if pane.req != 0 && pane.search.is_none() {
                 self.load(p);
             }
         }
@@ -549,6 +557,15 @@ impl App {
                     }
                     p.resort(sh);
                 }
+                Msg::PreviewReady { req, result } => {
+                    self.preview_running = false;
+                    if let Some(Dialog::Preview(preview)) = &mut self.dialog
+                        && preview.req == req
+                    {
+                        preview.finish(&self.ctx, result);
+                    }
+                    self.start_preview();
+                }
                 Msg::OpProgress(s) => self.status = s,
                 Msg::OpDone { summary, errors } => {
                     self.busy = false;
@@ -559,6 +576,16 @@ impl App {
                     self.refresh_all();
                 }
             }
+        }
+    }
+
+    fn start_preview(&mut self) {
+        if self.preview_running {
+            return;
+        }
+        let bg = self.bg();
+        if let Some(Dialog::Preview(preview)) = &mut self.dialog {
+            self.preview_running = preview.start(bg);
         }
     }
 
@@ -626,6 +653,16 @@ impl App {
                 } else if let Err(err) = open::that_detached(&e.path) {
                     self.status = format!("Could not open {}: {err}", e.name);
                 }
+            }
+            Action::Preview(path) => {
+                if self.dialog.is_some() {
+                    return;
+                }
+                let req = self.next_req;
+                self.next_req += 1;
+                self.dialog = Some(Dialog::Preview(Preview::new(req, path)));
+                self.start_preview();
+                self.ctx.request_repaint();
             }
             Action::Up(p) => {
                 let pane = self.panes[p].pane_mut();
@@ -768,6 +805,11 @@ impl App {
 
     fn global_keys(&mut self, ctx: &egui::Context, out: &mut Vec<Action>) {
         if self.dialog.is_some() {
+            if matches!(self.dialog, Some(Dialog::Preview(_))) && ctx.input_mut(|i| {
+                preview::consume_shortcut(i) || i.consume_key(egui::Modifiers::NONE, Key::Escape)
+            }) {
+                self.dialog = None;
+            }
             return;
         }
         let typing = ctx.egui_wants_keyboard_input();
@@ -993,10 +1035,13 @@ impl App {
 
     fn dialogs(&mut self, ctx: &egui::Context) {
         let Some(mut d) = self.dialog.take() else { return };
+        let preview = matches!(d, Dialog::Preview(_));
         let mut keep = true;
         let mut after: Option<Box<dyn FnOnce(&mut App)>> = None;
         let modal = egui::Modal::new(egui::Id::unique("dialog")).show(ctx, |ui| {
-            ui.set_width(460.0);
+            if !preview {
+                ui.set_width(460.0);
+            }
             match &mut d {
                 Dialog::NewFolder { pane, name, focus } => {
                     ui.heading("New folder");
@@ -1117,6 +1162,7 @@ impl App {
                         keep = false;
                     }
                 }
+                Dialog::Preview(preview) => keep = !preview.show(ui),
                 Dialog::Help => {
                     #[cfg(windows)]
                     {
@@ -1425,12 +1471,13 @@ fn section_with_add(ui: &mut egui::Ui, title: &str, tip: &str) -> bool {
 
 /// The sidebar favourites: what the user saved, or the standard folders until they change something.
 fn initial_favorites() -> Vec<(String, PathBuf)> {
-    let standard = fsx::quick_access();
+    let folders = fsx::standard_folders();
+    let standard = fsx::quick_access(&folders);
     match crate::config::load_favorites() {
         Some(paths) => paths
             .into_iter()
             .map(|p| {
-                let p = fix_redirected(p);
+                let p = fix_redirected(p, &folders);
                 (favorite_name(&p, &standard), p)
             })
             .collect(),
@@ -1440,10 +1487,10 @@ fn initial_favorites() -> Vec<(String, PathBuf)> {
 
 /// Favourites saved by older versions point at `home/Desktop` etc. even when Windows has
 /// moved that folder (often into OneDrive); point them at the real folder instead.
-fn fix_redirected(p: PathBuf) -> PathBuf {
-    for (_, real, legacy) in fsx::standard_folders() {
-        if p == legacy && real != legacy && real.is_dir() {
-            return real;
+fn fix_redirected(p: PathBuf, folders: &[(&str, PathBuf, PathBuf)]) -> PathBuf {
+    for (_, real, legacy) in folders {
+        if p == *legacy && real != legacy && real.is_dir() {
+            return real.clone();
         }
     }
     p
@@ -1485,7 +1532,7 @@ fn side_item(ui: &mut egui::Ui, g: Glyph, label: &str, selected: bool, tip: &str
 /// when rows are reordered.
 fn side_row(ui: &mut egui::Ui, g: Glyph, label: &str, selected: bool, drag_id: Option<egui::Id>) -> egui::Response {
     let pal = theme::pal(ui);
-    let size = egui::vec2(ui.available_width(), 28.0);
+    let size = egui::vec2(ui.available_width(), 24.0);
     let (rect, resp) = match drag_id {
         Some(id) => {
             let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
@@ -1502,7 +1549,7 @@ fn side_row(ui: &mut egui::Ui, g: Glyph, label: &str, selected: bool, drag_id: O
     let icon_c = if selected { pal.accent } else { pal.weak };
     let text_c = if selected { pal.strong } else { pal.text };
     theme::glyph(&p, g, egui::pos2(rect.left() + 18.0, rect.center().y), icon_c);
-    let galley = theme::elided(ui, label, egui::FontId::proportional(13.5), text_c, rect.width() - 44.0);
+    let galley = theme::elided(ui, label, egui::FontId::proportional(12.0), text_c, rect.width() - 44.0);
     theme::paint_left(&p, galley, egui::pos2(rect.left() + 36.0, rect.center().y), text_c);
     resp
 }
@@ -1603,5 +1650,89 @@ mod tests {
         assert_eq!(display(&mut app), before);
         app.dual = false;
         assert_eq!(display(&mut app), before);
+    }
+
+    #[test]
+    fn ctrl_i_previews_the_current_file() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        let mut frame = eframe::Frame::_new_kittest();
+        let pane = app.panes[0].pane_mut();
+        pane.path = PathBuf::from("previewTest");
+        let path = pane.path.join("previewTest.txt");
+        let entry = fsx::Entry::new(path, "previewTest.txt".into(), None, None);
+        let mut folder = fsx::Entry::new(pane.path.join("first"), "first".into(), None, None);
+        folder.is_dir = true;
+        pane.set_entries(vec![folder, entry], (fsx::SortKey::Name, true), false);
+
+        let modifiers = egui::Modifiers { ctrl: true, command: !cfg!(target_os = "macos"), ..Default::default() };
+        let key = |key, pressed, modifiers| egui::Event::Key {
+            key, physical_key: None, pressed, repeat: false, modifiers,
+        };
+        let shortcut = |pressed| key(Key::I, pressed, modifiers);
+        let mut send = |app: &mut App, events| {
+            let input = egui::RawInput { events, ..Default::default() };
+            ctx.run_ui(input, |ui| app.ui(ui, &mut frame)).drop_without_applying_deltas();
+        };
+
+        assert!(!app.preview_running);
+        send(&mut app, vec![key(Key::ArrowDown, true, egui::Modifiers::NONE), shortcut(true)]);
+        assert!(matches!(app.dialog, Some(Dialog::Preview(_))));
+        send(&mut app, vec![shortcut(true)]);
+        assert!(matches!(app.dialog, Some(Dialog::Preview(_))), "a held key should not close the preview");
+        send(&mut app, vec![shortcut(false)]);
+        send(&mut app, vec![shortcut(true)]);
+        assert!(app.dialog.is_none());
+
+        send(&mut app, vec![shortcut(false), egui::Event::Text("preview".into())]);
+        assert!(ctx.egui_wants_keyboard_input(), "filter should have keyboard focus");
+        assert_eq!(app.panes[0].pane().view.len(), 1);
+        send(&mut app, vec![shortcut(true)]);
+        assert!(matches!(app.dialog, Some(Dialog::Preview(_))));
+        send(&mut app, vec![key(Key::Escape, true, egui::Modifiers::NONE)]);
+        assert!(app.dialog.is_none());
+        assert_eq!(app.panes[0].pane().filter, "preview");
+    }
+
+    #[test]
+    fn stale_preview_does_not_upload_a_texture() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        let stale_req = app.next_req;
+        app.next_req += 1;
+        app.preview_running = true;
+        app.apply(Action::Preview(PathBuf::from("newPreview.txt")));
+        let num_textures = ctx.tex_manager().read().num_allocated();
+        app.tx.send(Msg::PreviewReady {
+            req: stale_req,
+            result: Ok(preview::Content::Raster {
+                image: egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
+                pdf: false,
+            }),
+        }).unwrap();
+        app.poll();
+        assert_eq!(ctx.tex_manager().read().num_allocated(), num_textures);
+        assert!(matches!(app.dialog, Some(Dialog::Preview(ref preview)) if preview.req == stale_req + 1));
+    }
+
+    #[test]
+    fn the_second_pane_defers_its_listing_until_shown() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut draw = |app: &mut App| {
+            ctx.run_ui(egui::RawInput::default(), |ui| app.ui(ui, &mut frame))
+                .drop_without_applying_deltas();
+        };
+
+        app.refresh_all();
+        draw(&mut app);
+        assert_eq!(app.panes[1].pane().req, 0);
+        app.dual = true;
+        draw(&mut app);
+        let req = app.panes[1].pane().req;
+        assert_ne!(req, 0);
+        draw(&mut app);
+        assert_eq!(app.panes[1].pane().req, req);
     }
 }
