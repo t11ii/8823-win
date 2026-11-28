@@ -26,6 +26,7 @@ const VERB_KEY: PCWSTR = w!("8823.OpenFolder");
 const PREVIOUS: PCWSTR = w!("PreviousDefault");
 const DEFAULT: PCWSTR = null();
 const UPDATE: REG_SAM_FLAGS = KEY_READ | KEY_WRITE;
+const CLEANUP: REG_SAM_FLAGS = UPDATE | DELETE;
 
 pub const OPEN_FLAG: &str = "--open-folder";
 
@@ -100,18 +101,25 @@ fn status_in(root: HKEY) -> io::Result<Status> {
 
 fn register_in(root: HKEY, command: &Value) -> io::Result<()> {
     let shells = [
-        Key::create(root, SHELLS[0], UPDATE)?,
-        Key::create(root, SHELLS[1], UPDATE)?,
+        Key::create(root, SHELLS[0], CLEANUP)?,
+        Key::create(root, SHELLS[1], CLEANUP)?,
     ];
     let previous = [shells[0].get(DEFAULT)?, shells[1].get(DEFAULT)?];
+    let verbs = [
+        Key::create(shells[0].0, VERB_KEY, CLEANUP)?,
+        Key::create(shells[1].0, VERB_KEY, CLEANUP)?,
+    ];
+    let commands = [
+        Key::create(verbs[0].0, w!("command"), CLEANUP)?,
+        Key::create(verbs[1].0, w!("command"), CLEANUP)?,
+    ];
 
     // Prepare both launch commands and their backups before changing either default.
-    for (shell, value) in shells.iter().zip(&previous) {
-        let verb = Key::create(shell.0, VERB_KEY, UPDATE)?;
+    for ((verb, command_key), value) in verbs.iter().zip(&commands).zip(&previous) {
         if !value.as_ref().is_some_and(Value::is_our_verb) {
             verb.replace(PREVIOUS, value.as_ref())?;
         }
-        Key::create(verb.0, w!("command"), UPDATE)?.replace(DEFAULT, Some(command))?;
+        command_key.replace(DEFAULT, Some(command))?;
         verb.replace(DEFAULT, Some(&Value::text(OsStr::new("Open in 8823"))))?;
     }
     let selected = Value::text(OsStr::new(VERB));
@@ -138,14 +146,22 @@ fn restore_in(root: HKEY) -> io::Result<()> {
 }
 
 fn restore_shell(root: HKEY, path: PCWSTR) -> io::Result<()> {
-    let Some(shell) = Key::open(root, path, UPDATE | DELETE)? else {
+    let Some(shell) = Key::open(root, path, UPDATE)? else {
         return Ok(());
     };
-    let previous = match Key::open(shell.0, VERB_KEY, KEY_READ)? {
-        Some(verb) => verb.get(PREVIOUS)?,
-        None => None,
+    let (registered, previous) = match Key::open(shell.0, VERB_KEY, KEY_READ)? {
+        Some(verb) => (true, verb.get(PREVIOUS)?),
+        None => (false, None),
     };
     restore_default(&shell, previous.as_ref())?;
+
+    // Request deletion rights after restoring the default, in case the ACL changed.
+    if !registered {
+        return Ok(());
+    }
+    let Some(shell) = Key::open(root, path, CLEANUP)? else {
+        return Ok(());
+    };
     // SAFETY: The open shell key is live and this removes only 8823's own verb.
     allow_missing(unsafe { RegDeleteTreeW(shell.0, VERB_KEY) })
 }
