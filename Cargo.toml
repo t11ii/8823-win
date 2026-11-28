@@ -10,20 +10,39 @@ name = "8823"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "clipboard", "x11"] }
+eframe = { version = "0.37", default-features = false, features = ["glow", "clipboard", "x11"] }
 unicode-normalization = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 trash = "5"
 open = "5"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico", "tiff"] }
-egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
+# Thumbnails (src/osimg) use the OS codecs for JPEG, BMP... on Windows and macOS and this
+# crate for the formats it decodes faster there. PNG is also the window icon.
+image = { version = "0.25", default-features = false, features = ["png", "webp", "tiff"] }
+# No egui default fonts: they would link Hack and Ubuntu-Light (0.6 MB) that 8823 Gothic
+# already covers. The emoji fonts we keep are bundled in assets/fonts/egui (src/fonts.rs).
+egui = { version = "0.37", default-features = false }
 raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies.image]
+# GIF: the image crate is faster than ImageIO.
+version = "0.25"
+default-features = false
+features = ["gif"]
+
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+# Other platforms decode every thumbnail with the image crate.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico", "tiff"] }
+
+[features]
+# Build every image-crate decoder on Windows/macOS too, to compare speeds
+# (cargo test --release --features rust-decoders -- --ignored bench_thumbs --nocapture).
+rust-decoders = ["image/jpeg", "image/gif", "image/bmp", "image/webp", "image/ico", "image/tiff"]
 
 [build-dependencies]
 winresource = { version = "0.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Com", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Ole", "Win32_System_Memory", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Com", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Ole", "Win32_System_Memory", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Registry"] }
 
 # Dragging files out to other apps (src/dragout.rs). Same versions eframe already uses.
 [target.'cfg(target_os = "macos")'.dependencies]
